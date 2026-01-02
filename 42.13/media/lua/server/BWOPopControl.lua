@@ -1,0 +1,918 @@
+require "BanditGMD"
+require "BWODebug"
+require "BWOUtils"
+require "BWOGMD"
+BWOPopControl = BWOPopControl or {}
+
+local function normalizeScenario(selected)
+    if selected == "Week" then return "Week" end
+    if selected == "DayOne" or selected == "DOne" then return "DOne" end
+    return nil
+end
+
+-- первичная инициализация (может быть до загрузки мод-даты)
+do
+    local selected = BWOGMD
+        and BWOGMD.data
+        and BWOGMD.data.general
+        and BWOGMD.data.general.selectedScenario
+    local scen = normalizeScenario(selected) or "DOne"
+
+    BWOPopControl.Scenario = scen
+    if scen == "Week" then
+        BWOPopControl.zombiePercent = 0
+    else
+        BWOPopControl.zombiePercent = 66
+    end
+end
+
+-- мод-дата подтягивается позже стартового require, поэтому уточняем сценарий динамически
+local function refreshScenarioFromGMD()
+    local selected = BWOGMD
+        and BWOGMD.data
+        and BWOGMD.data.general
+        and BWOGMD.data.general.selectedScenario
+    local scen = normalizeScenario(selected)
+    if not scen or scen == BWOPopControl.Scenario then return end
+
+    BWOPopControl.Scenario = scen
+    if scen == "Week" then
+        BWOPopControl.zombiePercent = 0
+    else
+        BWOPopControl.zombiePercent = 66
+    end
+
+    dprint("[POP CONTROL][INFO] SCENARIO SWITCHED TO: " .. tostring(scen), 2)
+end
+
+-- population defaults (server-side mirror of client values)
+BWOPopControl.ZombieMax = BWOPopControl.ZombieMax or 0
+BWOPopControl.StreetsNominal = BWOPopControl.StreetsNominal or 0
+BWOPopControl.InhabitantsNominal = BWOPopControl.InhabitantsNominal or 0
+BWOPopControl.SurvivorsNominal = BWOPopControl.SurvivorsNominal or 0
+
+BWOPopControl.Police = {} 
+BWOPopControl.Police.Cooldown = 0
+BWOPopControl.Police.On = true
+
+BWOPopControl.SWAT = {} 
+BWOPopControl.SWAT.Cooldown = 0
+BWOPopControl.SWAT.On = true
+
+BWOPopControl.Security = {}
+BWOPopControl.Security.Cooldown = 0
+BWOPopControl.Security.On = true
+
+BWOPopControl.Medics = {}
+BWOPopControl.Medics.Cooldown = 0
+BWOPopControl.Medics.On = true
+
+BWOPopControl.Hazmats = {}
+BWOPopControl.Hazmats.Cooldown = 0
+BWOPopControl.Hazmats.On = true
+
+BWOPopControl.Fireman = {} 
+BWOPopControl.Fireman.Cooldown = 0
+BWOPopControl.Fireman.On = true
+
+local function zombieController(targetCnt)
+    if targetCnt > 400 then return end
+    local gmd = GetBanditModData() or {}
+    local queue = gmd.Queue or {}
+    local players = BWOUtils.GetAllPlayers()
+    if not players or #players == 0 then return end
+
+    -- пройти по каждому игроку и удалить у него не более targetCnt зомби
+    for pIdx = 1, #players do
+        local player = players[pIdx]
+        local cell = player and player:getCell()
+        if cell then
+            local zombieList = cell:getZombieList()
+            local zombieListSize = zombieList:size()
+            local zombies = {}
+            for i = 0, zombieListSize - 1 do
+                local z = zombieList:get(i)
+                if z then table.insert(zombies, z) end
+            end
+            print("[ZOMBIEDEL] Zombielist size: " .. zombieListSize)
+            local removed = 0
+            local toDelete = {}
+            local desired = targetCnt or 0
+            local current = #zombies
+            local toRemove = current - desired
+            if toRemove <= 0 then
+                print(string.format("[ZOMBIEDEL] current %s <= target %s, nothing to delete for player %s", zombieListSize, desired, player.getUsername and player:getUsername() or tostring(pIdx)))
+            else
+                -- safety cap to avoid deleting too many per tick
+                if toRemove > 400 then toRemove = 400 end
+                print(string.format("[ZOMBIEDEL] need to delete %s (target %s, current %s)", toRemove, desired, zombieListSize))
+                for _, zombie in ipairs(zombies) do
+                    if removed >= toRemove then break end
+                    local id = BanditUtils.GetZombieID(zombie)
+                    if not id then
+                        -- log when zombie id cannot be determined to help debugging
+                        print(string.format("[ZOMBIEDEL] Zombie ID not found (index %s)", tostring(i)))
+                    elseif queue and queue[id] then
+                        -- бандит: пропускаем
+                        print(string.format("[ZOMBIEDEL] Skip bandit (id %s) – in queue", tostring(id)))
+                    elseif zombie:isAlive() and not zombie:isReanimatedPlayer() then
+                        zombie:removeFromWorld()
+                        zombie:removeFromSquare()
+                        print("[ZOMBIDEL] Zombie removed on server - " .. id)
+                        sendServerCommand(player, "Commands", "ZombieRemove", {zid = id})
+                        table.insert(toDelete, id)
+                        removed = removed + 1
+                    end
+                end
+            end
+
+            print("[POP CONTROL] Zombie Controller: Target Count: " .. targetCnt .. " Removed count: " .. removed .. " player: " .. (player.getUsername and player:getUsername() or tostring(pIdx)))
+        end
+    end
+end
+
+local function countTable(tbl)
+    local c = 0
+    if not tbl then return c end
+    for _ in pairs(tbl) do c = c + 1 end
+    return c
+end
+
+local function pickDensityPlayer()
+    local players = BWOUtils.GetAllPlayers()
+    if not players or #players == 0 then return nil end
+    return BanditUtils.Choice(players)
+end
+
+local function getDensityForPlayer(player)
+    local density = 1
+    if BWOBuildings and BWOBuildings.GetDensityScore and player then
+        density = BWOBuildings.GetDensityScore(player, 120) / 8000
+    end
+    if density > 2.2 then density = 2.2 end
+    return density
+end
+
+local function streetsController(targetCnt)
+    if not isServer() then return end
+    local player = pickDensityPlayer()
+    if not player then return end
+
+    local density = getDensityForPlayer(player)
+    local hourmod = getHourScore and getHourScore() or 1
+    local sandbox = (SandboxVars and SandboxVars.BanditsWeekOne) or {}
+    local multiplier = sandbox.StreetsPopMultiplier or 1
+    local target = targetCnt * density * hourmod * multiplier
+
+    local programs = {"Walker", "Runner", "Patrol", "Postal", "Gardener", "Janitor", "Entertainer", "Vandal"}
+    local current = countTable(BWOUtils.GetAllBanditByProgram(programs))
+
+    local missing = target - current
+    if missing > 20 then missing = 20 end
+    if missing >= 1 then
+        BWOPopControl.StreetsSpawn(missing)
+    elseif missing < 0 then
+        BWOPopControl.StreetsDespawn(-missing)
+    end
+end
+
+local function inhabitantsController(targetCnt)
+    if not isServer() then return end
+    local player = pickDensityPlayer()
+    if not player then return end
+
+    local density = getDensityForPlayer(player)
+    local sandbox = (SandboxVars and SandboxVars.BanditsWeekOne) or {}
+    local multiplier = sandbox.InhabitantsPopMultiplier or 1
+    local target = targetCnt * density * multiplier
+
+    local current = countTable(BWOUtils.GetAllBanditByProgram({"Inhabitant"}))
+
+    local missing = target - current
+    if missing > 20 then missing = 20 end
+    if missing >= 1 then
+        BWOPopControl.InhabitantsSpawn(missing)
+    elseif missing < 0 then
+        BWOPopControl.InhabitantsDespawn(-missing)
+    end
+end
+
+local function survivorsController(targetCnt)
+    if not isServer() then return end
+
+    local target = targetCnt
+    local current = countTable(BWOUtils.GetAllBanditByProgram({"Survivor"}))
+
+    local missing = target - current
+    if missing > 4 then missing = 4 end
+    if missing >= 1 then
+        BWOPopControl.SurvivorsSpawn(missing)
+    elseif missing < 0 then
+        BWOPopControl.SurvivorsDespawn(-missing)
+    end
+end
+
+BWOPopControl.population = {
+    zombie = {
+        periods = {
+            [1] = {start=0, endt=110, cnt=0}, -- 110
+            [2] = {start=110, endt=118, cnt=1}, -- 8
+            [3] = {start=118, endt=123, cnt=2}, -- 3
+            [4] = {start=123, endt=125, cnt=3}, -- 2
+            [5] = {start=125, endt=126, cnt=5}, -- 1
+            [6] = {start=126, endt=127, cnt=8},
+            [7] = {start=127, endt=128, cnt=13},
+            [8] = {start=128, endt=100000, cnt=1000},
+        },
+        control = zombieController
+    },
+    inhabitant = {
+        periods = {
+            [1] = {start=0, endt=128, cnt=75},
+            [2] = {start=128, endt=129, cnt=50},
+            [3] = {start=129, endt=130, cnt=40},
+            [4] = {start=130, endt=131, cnt=30},
+            [5] = {start=131, endt=132, cnt=15},
+            [6] = {start=132, endt=133, cnt=15},
+            [7] = {start=133, endt=170, cnt=4},
+            [8] = {start=170, endt=100000, cnt=0},
+        },
+        control = inhabitantsController
+    },
+    street = {
+        periods = {
+            [1] = {start=0, endt=128, cnt=46},
+            [2] = {start=128, endt=129, cnt=53},
+            [3] = {start=129, endt=130, cnt=56},
+            [4] = {start=130, endt=131, cnt=59},
+            [5] = {start=131, endt=132, cnt=62},
+            [6] = {start=132, endt=133, cnt=55},
+            [7] = {start=133, endt=170, cnt=1},
+            [8] = {start=170, endt=100000, cnt=0},
+        },
+        control = streetsController
+    },
+    survivor = {
+        periods = {
+            [1] = {start=0, endt=129, cnt=0},
+            [2] = {start=129, endt=130, cnt=2},
+            [3] = {start=130, endt=131, cnt=3},
+            [4] = {start=131, endt=132, cnt=5},
+            [5] = {start=132, endt=133, cnt=8},
+            [6] = {start=133, endt=170, cnt=6},
+            [7] = {start=170, endt=100000, cnt=0},
+        },
+        control = survivorsController
+    }
+}
+
+local function getGroupCount(group, worldAge)
+    local periods = BWOPopControl.population[group].periods
+    for i = 1, #periods do
+        local period = periods[i]
+        if worldAge >= period.start and worldAge < period.endt then
+            return period.cnt
+        end
+    end
+    return nil
+end
+
+
+-- server-only wrapper that picks a server-side player and spawns nearby
+BWOPopControl.StreetsSpawn = function(cnt)
+    if not isServer() then return end
+    local players = BWOUtils.GetDistantPlayers()
+    if #players == 0 then return end
+    cnt = cnt or 1
+
+    local player = BanditUtils.Choice(players)
+    if not player then return end
+
+    local cell = player:getCell()
+    if not cell then return end
+
+    local cm = getWorld():getClimateManager()
+    local rainIntensity = cm and cm:getRainIntensity() or 0
+    local px, py = player:getX(), player:getY()
+
+    local args = { size = 1 }
+
+    for i = 1, cnt do
+        local x = 35 + ZombRand(25)
+        local y = 35 + ZombRand(25)
+
+        if ZombRand(2) == 1 then x = -x end
+        if ZombRand(2) == 1 then y = -y end
+
+        local square = cell:getGridSquare(px + x, py + y, 0)
+        if square and square:isOutside() and not BWOSquareLoader.IsInExclusion(square:getX(), square:getY()) then
+            args.x = square:getX()
+            args.y = square:getY()
+            args.z = square:getZ()
+
+            local zombieType = ItemPickerJava.getSquareZombiesType(square)
+            if zombieType and zombieType == "Army" then
+                args.cid = Bandit.clanMap.ArmyGreen
+                args.program = "Patrol"
+            else
+                local rnd = ZombRand(100)
+                if rnd < 4 then
+                    args.cid = Bandit.clanMap.Runner
+                    args.program = "Runner"
+                elseif rnd < 8 then
+                    args.cid = Bandit.clanMap.Postal
+                    args.program = "Postal"
+                elseif rnd < 13 then
+                    args.cid = Bandit.clanMap.Gardener
+                    args.program = "Gardener"
+                elseif rnd < 16 then
+                    args.cid = Bandit.clanMap.Janitor
+                    args.program = "Janitor"
+                elseif rnd < 17 then
+                    args.cid = Bandit.clanMap.Vandal
+                    args.program = "Vandal"
+                else
+                    if rainIntensity > 0.02 then
+                        args.cid = Bandit.clanMap.Walker
+                    else
+                        args.cid = Bandit.clanMap.WalkerRain
+                    end
+                    args.program = "Walker"
+                end
+            end
+
+            BanditServer.Spawner.Clan(player, args)
+        end
+    end
+end
+
+
+-- server-only wrapper that picks a server-side player and despawns distant bandits
+BWOPopControl.StreetsDespawn = function(cnt)
+    if not isServer() then return end
+    local players = BWOUtils.GetDistantPlayers()
+    if #players == 0 then return end
+    cnt = cnt or 1
+
+    local player = BanditUtils.Choice(players)
+    if not player then return end
+
+    local px, py = player:getX(), player:getY()
+    local removePrg = {"Walker", "Runner", "Postal", "Entertainer", "Janitor", "Medic", "Gardener", "Vandal"}
+    local zombieList = BWOUtils.GetAllBanditByProgram(removePrg)
+
+    local removed = 0
+    for _, zombie in pairs(zombieList) do
+        local zx = zombie.x
+        local zy = zombie.y
+        local dist = BanditUtils.DistTo(px, py, zx, zy)
+
+        if dist > 50 then
+            local zid = zombie.id
+            local zombieObj = BWOZombie.GetInstanceById(zid)
+            if zombieObj then
+                zombieObj:removeFromSquare()
+                zombieObj:removeFromWorld()
+                sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+            end
+
+            -- cleanup caches/mod data
+            BanditZombie.CacheLightZ[zid] = nil
+            local gmd = GetBanditClusterData(zid)
+            if gmd and gmd[zid] then gmd[zid] = nil end
+
+            removed = removed + 1
+            if removed >= cnt then break end
+        end
+    end
+end
+
+-- server-side inhabitants spawner (ported from client, no client commands)
+BWOPopControl.InhabitantsSpawn = function(max)
+    if not isServer() then return end
+    local players = BWOUtils.GetDistantPlayers()
+    if #players == 0 then return end
+
+    max = max or 0
+    local player = BanditUtils.Choice(players)
+    if not player then return end
+
+    local cell = player:getCell()
+    if not cell then return end
+
+    local px, py = player:getX(), player:getY()
+    local rooms = cell:getRoomList()
+    local banditList = BWOZombie.CacheLightB or {}
+
+    local cursor = 0
+    local roomPool = {}
+
+    for i = 0, rooms:size() - 1 do
+        local room = rooms:get(i)
+        local def = room:getRoomDef()
+
+        if def then
+            local building = room:getBuilding()
+            local buildingDef = building and building:getDef()
+            if buildingDef then buildingDef:setAlarmed(false) end
+
+            if building and not BWOBuildings.IsEventBuilding(building, "home") then
+                local bx1, bx2 = def:getX(), def:getX2()
+                local by1, by2 = def:getY(), def:getY2()
+                local bz = def:getZ()
+                local sd = 15
+                local md = 90
+
+                if (px < bx1 - sd or px > bx2 + sd) and (py < by1 - sd or py > by2 + sd)
+                    and (px > bx1 - md or px < bx2 + md) and (py > by1 - md or py < by2 + md) then
+
+                    local roomData = BWORooms.Get(room)
+                    if roomData then
+                        local spawnSquare = def:getFreeSquare()
+                        if spawnSquare and not spawnSquare:getZombie() and not spawnSquare:isOutside() then
+
+                            local rid = def:getIDString()
+                            local sx, sy, sz = spawnSquare:getX(), spawnSquare:getY(), spawnSquare:getZ()
+
+                            local occupantsRequiredGeneric = 0
+                            local occupantsRequiredSpecial = 0
+                            local occupantsRequiredBandit = 0
+
+                            if roomData.cids and bz >= 0 then
+                                local occupantsRequiredTotal = BWORooms.GetRoomMaxPop(room)
+
+                                if roomData.cidSpecial then
+                                    for _ in pairs(roomData.cidSpecial) do
+                                        occupantsRequiredSpecial = occupantsRequiredSpecial + 1
+                                    end
+                                end
+
+                                occupantsRequiredGeneric = occupantsRequiredTotal - occupantsRequiredSpecial
+                            end
+
+                            if roomData.cidBandit and bz < 0 and BWOScheduler.NPC.Run then
+                                occupantsRequiredBandit = BWORooms.GetRoomMaxPop(room)
+                            end
+
+                            local occupantsPresentGeneric = 0
+                            local occupantsPresentSpecial = 0
+                            local occupantsPresentBandit = 0
+
+                            if occupantsRequiredGeneric > 0 or occupantsRequiredSpecial > 0 or occupantsRequiredBandit > 0 then
+                                for _, otherBandit in pairs(banditList) do
+                                    if rid == otherBandit.rid then
+                                        if occupantsRequiredGeneric > 0 then
+                                            for _, cid in pairs(roomData.cids) do
+                                                if cid == otherBandit.brain.cid then
+                                                    occupantsPresentGeneric = occupantsPresentGeneric + 1
+                                                    break
+                                                end
+                                            end
+                                        end
+
+                                        if occupantsRequiredSpecial > 0 then
+                                            for _, cid in pairs(roomData.cidSpecial) do
+                                                if cid == otherBandit.brain.cid then
+                                                    occupantsPresentSpecial = occupantsPresentSpecial + 1
+                                                    break
+                                                end
+                                            end
+                                        end
+
+                                        if occupantsRequiredBandit > 0 then
+                                            for _, cid in pairs(roomData.cidBandit) do
+                                                if cid == otherBandit.brain.cid then
+                                                    occupantsPresentBandit = occupantsPresentBandit + 1
+                                                    break
+                                                end
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+
+                            local occupantsSpawnSpecial = occupantsRequiredSpecial - occupantsPresentSpecial
+                            if occupantsSpawnSpecial > 0 then
+                                local cid = BanditUtils.Choice(roomData.cidSpecial)
+                                local roomSize = BWORooms.GetRoomSize(room)
+                                local cursorStart = cursor
+                                cursor = cursor + math.floor(roomSize ^ 1.2)
+                                table.insert(roomPool, {room=room, x=sx, y=sy, z=sz, cid = cid, cursorStart=cursorStart, cursorEnd=cursor})
+                            end
+
+                            local occupantsSpawnGeneric = occupantsRequiredGeneric - occupantsPresentGeneric
+                            if occupantsSpawnGeneric > 0 then
+                                local cid = BanditUtils.Choice(roomData.cids)
+                                local roomSize = BWORooms.GetRoomSize(room)
+                                local cursorStart = cursor
+                                cursor = cursor + math.floor(roomSize ^ 1.2)
+                                table.insert(roomPool, {room=room, x=sx, y=sy, z=sz, cid = cid, cursorStart=cursorStart, cursorEnd=cursor})
+                            end
+
+                            local occupantsSpawnBandit = occupantsRequiredBandit - occupantsPresentBandit
+                            if occupantsSpawnBandit > 0 then
+                                local cid = BanditUtils.Choice(roomData.cidBandit)
+                                local roomSize = BWORooms.GetRoomSize(room)
+                                local cursorStart = cursor
+                                cursor = cursor + math.floor(roomSize ^ 1.2)
+                                table.insert(roomPool, {room=room, x=sx, y=sy, z=sz, cid = cid, cursorStart=cursorStart, cursorEnd=cursor})
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fisher-Yates shuffle
+    for i = #roomPool, 2, -1 do
+        local j = ZombRand(i) + 1
+        roomPool[i], roomPool[j] = roomPool[j], roomPool[i]
+    end
+
+    local i = 0
+    for _, rp in pairs(roomPool) do
+        local args = {
+            size = 1,
+            program = "Inhabitant",
+            x = rp.x,
+            y = rp.y,
+            z = rp.z,
+            cid = rp.cid
+        }
+        BanditServer.Spawner.Clan(player, args)
+
+        i = i + 1
+        if i > max then break end
+    end
+end
+
+-- server-side inhabitants despawner
+BWOPopControl.InhabitantsDespawn = function(cnt)
+    if not isServer() then return end
+    local players = BWOUtils.GetDistantPlayers()
+    if #players == 0 then return end
+    cnt = cnt or 1
+
+    local player = BanditUtils.Choice(players)
+    if not player then return end
+
+    local px, py = player:getX(), player:getY()
+    local removePrg = {"Inhabitant"}
+    local zombieList = BWOUtils.GetAllBanditByProgram(removePrg)
+
+    local i = 0
+    for _, zombie in pairs(zombieList) do
+        local zx = zombie.x
+        local zy = zombie.y
+        local dist = BanditUtils.DistTo(px, py, zx, zy)
+        
+        if dist > 50 then
+            local zid = zombie.id
+            local zombieObj = BanditZombie.GetInstanceById(zid)
+            if zombieObj then
+                zombieObj:removeFromSquare()
+                zombieObj:removeFromWorld()
+            end
+
+            -- keep server state in sync
+            sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+
+            i = i + 1
+            if i >= cnt then break end
+        end
+    end
+end
+
+-- server-side survivors spawner
+BWOPopControl.SurvivorsSpawn = function(cnt)
+    if not isServer() then return end
+    local players = BWOUtils.GetDistantPlayers()
+    if #players == 0 then return end
+    cnt = cnt or 1
+
+    local player = BanditUtils.Choice(players)
+    if not player then return end
+
+    local cell = player:getCell()
+    if not cell then return end
+
+    local px, py = player:getX(), player:getY()
+
+    local args = {
+        cid = Bandit.clanMap.Survivor,
+        size = 1,
+        program = "Survivor"
+    }
+
+    local gmd = BWOGMD.Get()
+    local variant = gmd.Variant
+    if BWOVariants[variant].playerIsHostile then args.hostileP = true end
+
+    for i = 1, cnt do
+        local x = 35 + ZombRand(25)
+        local y = 35 + ZombRand(25)
+        
+        if ZombRand(2) == 1 then x = -x end
+        if ZombRand(2) == 1 then y = -y end
+
+        local square = cell:getGridSquare(px + x, py + y, 0)
+        if square and square:isOutside() and not BWOSquareLoader.IsInExclusion(square:getX(), square:getY()) then
+            args.x = square:getX()
+            args.y = square:getY()
+            args.z = square:getZ()
+
+            BanditServer.Spawner.Clan(player, args)
+        end
+    end
+end
+
+-- server-side survivors despawner
+BWOPopControl.SurvivorsDespawn = function(cnt)
+    if not isServer() then return end
+    local players = BWOUtils.GetDistantPlayers()
+    if #players == 0 then return end
+    cnt = cnt or 1
+
+    local player = BanditUtils.Choice(players)
+    if not player then return end
+
+    local px, py = player:getX(), player:getY()
+
+    local removePrg = {"Survivor"}
+    local zombieList = BWOUtils.GetAllBanditByProgram(removePrg)
+
+    local i = 0
+    for _, zombie in pairs(zombieList) do
+        local zx = zombie.x
+        local zy = zombie.y
+        local dist = BanditUtils.DistTo(px, py, zx, zy)
+        
+        if dist > 50 then
+            local zid = zombie.id
+            local zombieObj = BWOZombie.GetInstanceById(zid)
+            if zombieObj then
+                zombieObj:removeFromSquare()
+                zombieObj:removeFromWorld()
+            end
+
+            -- keep server state in sync
+            sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+
+            i = i + 1
+            if i >= cnt then break end
+        end
+    end
+end
+
+local onTick = function(numTicks)
+    if numTicks % 4 > 0 then return end
+    if not isServer() then return end
+
+    local worldAge = BWOUtils.GetWorldAge() 
+    local population = BWOPopControl.population
+    for group, data in pairs(population) do
+        if data.periods and data.control then
+            local targetCnt = getGroupCount(group, worldAge)
+            if targetCnt then
+                data.control(targetCnt)
+            end
+        end
+    end
+end
+
+local function loadBanditOptions(cid)
+    local bandits = {}
+    local options = BanditCustom.GetFromClan(cid)
+    for bid, option in pairs(options) do
+        -- enrich
+        option.bid = bid
+        table.insert(bandits, option)
+    end
+
+    return bandits
+end
+
+-- server-side population adjuster (Week scenario only, MP safe)
+local function getHourScore()
+    local hmap = {
+        [0] = 0.20, [1] = 0.15, [2] = 0.10, [3] = 0.05, [4] = 0.05,
+        [5] = 0.35, [6] = 0.85, [7] = 1.20, [8] = 1.20, [9] = 1.00,
+        [10] = 1.00, [11] = 0.80, [12] = 0.80, [13] = 0.80, [14] = 0.80,
+        [15] = 1.00, [16] = 1.20, [17] = 1.20, [18] = 1.00, [19] = 1.00,
+        [20] = 1.00, [21] = 0.90, [22] = 0.70, [23] = 0.40,
+    }
+    local gameTime = getGameTime()
+    local hour = gameTime and gameTime:getHour() or 12
+    return hmap[hour] or 1
+end
+
+local function pickServerPlayer()
+    local players = BWOUtils.GetAllPlayers()
+    if not players or #players == 0 then return nil end
+    return BanditUtils.Choice(players)
+end
+
+
+-- converts zeds into npcs
+local function everyOneMinute()
+    
+    if not isServer() then return end
+    refreshScenarioFromGMD()
+    -- print ("[POP CONTROL][INFO] INIT ")
+
+    if BWOPopControl.Scenario ~= "DOne" then return end
+    local worldAge = BWOUtils.GetWorldAge() 
+    local cell = getCell()
+    local zombieList = cell:getZombieList()
+    local zombieListSize = zombieList:size()
+
+    local clusters = {}
+    for i=0, BanditClusterCount-1 do
+        clusters[i] = false
+    end
+
+    dprint ("[POP CONTROL][INFO] ZOMBIES: " .. zombieListSize, 3)
+    for i = 0, zombieListSize - 1 do
+        local zombie = zombieList:get(i)
+        
+        local rnd = ZombRand(100)
+        if rnd > BWOPopControl.zombiePercent and not zombie:getModData().skip then
+
+            local id = BanditUtils.GetCharacterID(zombie)
+            local gmd = GetBanditClusterData(id)
+            local c = GetBanditCluster(id)
+            if not gmd[id] then
+                
+                -- this forces the reclothing so that server knows the outfit
+                zombie:dressInPersistentOutfitID(id)
+
+                zombie:getModData().brainId = id
+
+                local outfitName = zombie:getOutfitName()
+                if not outfitName then
+                    dprint ("[POPCONTROL][ERR] MISSING OUTFIT!", 1)
+                    outfitName = "Generic01"
+                end
+                
+                local outfitData = Bandit.outfit2clan[outfitName]
+                if not outfitData then
+                    dprint ("[POPCONTROL][WARN] MISSING OUTFIT MAPPING: " .. tostring(outfitName), 2)
+                    outfitData = {cid = Bandit.clanMap.Walker}
+                end
+
+                if outfitData.cid then
+
+                    local bandit = BanditUtils.Choice(loadBanditOptions(outfitData.cid))
+                    local brain = {}
+
+                    dprint ("[POPCONTROL][INFO] CONVERTING, OUTFIT: " .. tostring(outfitName) .. ", CID: " .. outfitData.cid, 3)
+
+                    -- auto-generated properties 
+                    brain.id = id
+                    brain.inVehicle = false
+                    brain.fullname = BanditNames.GenerateName(zombie:isFemale())
+
+                    brain.born = getGameTime():getWorldAgeHours()
+                    brain.bornCoords = {}
+                    brain.bornCoords.x = zombie:getX()
+                    brain.bornCoords.y = zombie:getY()
+                    brain.bornCoords.z = zombie:getZ()
+
+                    brain.stationary = false
+                    brain.sleeping = false
+                    brain.aiming = false
+                    brain.moving = false
+                    brain.endurance = 1.00
+                    brain.speech = 0.00
+                    brain.sound = 0.00
+                    brain.infection = 0
+
+                    -- properties taken from bandit custom profile
+                    local general = bandit.general
+                    brain.clan = general.cid
+                    brain.cid = general.cid
+                    brain.bid = general.bid
+                    brain.female = general.female or false
+                    zombie:setFemaleEtc(general.female)
+                    brain.skin = general.skin or 1
+                    brain.hairType = general.hairType or 1
+                    brain.hairColor = general.hairColor or 1
+                    brain.beardType = general.beardType or 1
+                    brain.eatBody = false
+
+                    local health = general.health or 5
+                    brain.health = BanditUtils.Lerp(health, 1, 9, 1, 2.6)
+
+                    local accuracyBoost = general.sight or 5
+                    brain.accuracyBoost = BanditUtils.Lerp(accuracyBoost, 1, 9, -8, 8)
+
+                    local enduranceBoost = general.endurance or 5
+                    brain.enduranceBoost = BanditUtils.Lerp(enduranceBoost, 1, 9, 0.25, 1.75)
+
+                    local strengthBoost = general.strength or 5
+                    brain.strengthBoost = BanditUtils.Lerp(strengthBoost, 1, 9, 0.25, 1.75)
+
+                    brain.exp = {0, 0, 0}
+                    if general.exp1 and general.exp2 and general.exp3 then
+                        brain.exp = {general.exp1, general.exp2, general.exp3}
+                    end
+
+                    brain.weapons = {}
+                    brain.weapons.melee = "Base.BareHands"
+                    brain.weapons.primary = {["bulletsLeft"] = 0, ["magCount"] = 0}
+                    brain.weapons.secondary = {["bulletsLeft"] = 0, ["magCount"] = 0}
+
+                    if bandit.weapons then
+                        if bandit.weapons.melee then
+                            brain.weapons.melee = BanditCompatibility.GetLegacyItem(bandit.weapons.melee)
+                        end
+                        for _, slot in pairs({"primary", "secondary"}) do
+                            brain.weapons[slot].bulletsLeft = 0
+                            brain.weapons[slot].magCount = 0
+                            if bandit.weapons[slot] and bandit.ammo[slot] then
+                                brain.weapons[slot] = BanditWeapons.Make(bandit.weapons[slot], bandit.ammo[slot])
+                            end
+                        end
+                    end
+
+                    brain.clothing = bandit.clothing or {}
+                    brain.tint = bandit.tint or {}
+                    brain.bag = bandit.bag
+
+                    brain.loot = {}
+                    brain.inventory = {}
+                    brain.tasks = {}
+
+                    -- bandit differentiators
+                    -- 1 - symptoms [0 - no, 1 - yes]
+                    -- 2 - character [0,1 - panic, 2 - cry, 3,4 - hide, 5,6 - courage]
+                    brain.rnd = {ZombRand(2), ZombRand(10), ZombRand(100), ZombRand(1000), ZombRand(10000)}
+
+                    brain.personality = {}
+
+                    -- addiction and sickness
+                    brain.personality.alcoholic = (ZombRand(50) == 0)
+                    brain.personality.smoker = (ZombRand(4) == 0)
+                    brain.personality.compulsiveCleaner = (ZombRand(90) == 0)
+
+                    -- collectors
+                    brain.personality.comicsCollector = (ZombRand(80) == 0)
+                    brain.personality.gameCollector = (ZombRand(220) == 0)
+                    brain.personality.hottieCollector = (ZombRand(100) == 0)
+                    brain.personality.toyCollector = (ZombRand(220) == 0)
+                    brain.personality.videoCollector = (ZombRand(220) == 0)
+                    brain.personality.underwearCollector = (ZombRand(150) == 0)
+
+                    -- heritage
+                    brain.personality.fromPoland = (ZombRand(120) == 0) -- ku chwale ojczyzny!
+
+                    brain.hostile = false
+                    brain.hostileP = false
+
+                    brain.program = {}
+                    brain.program.name = "Civilian"
+                    brain.program.stage = "Prepare"
+                    brain.programFallback = brain.program
+
+                    -- bwo uses it
+                    brain.occupation = ""
+                    brain.loyal = false
+
+                    brain.master = 0
+                    brain.permanent = false
+                    brain.key = nil
+
+                    brain.voice = Bandit.PickVoice(zombie)
+
+                    Bandit.ApplyVisuals(zombie, brain)
+
+                    -- ready!
+                    gmd[id] = brain
+                    clusters[c] = true
+                    
+                    dprint ("[POP CONTROL][INFO] ZOMBIE " .. id .. " BANDITIZED.", 3)
+                else
+                    dprint ("[POP CONTROL][ERR] WRONG CID MAPPING FOR OUTFIT " .. outfitName, 1)
+                end
+            else
+                -- dprint ("[POP CONTROL][INFO] ZOMBIE" .. id .. " IS ALREADY A BANDIT.", 3)
+            end
+        else
+            zombie:getModData().skip = true
+        end
+    end
+
+    for i=0, BanditClusterCount-1 do
+        if clusters[i] then
+            dprint ("[POP CONTROL][INFO] TRANSMIT CLUSTER" .. i, 3)
+            TransmitBanditClusterExpicit(i)
+        end
+    end
+end
+
+Events.OnTick.Remove(onTick)
+Events.OnTick.Add(onTick)
+
+Events.EveryOneMinute.Remove(everyOneMinute)
+Events.EveryOneMinute.Add(everyOneMinute)
