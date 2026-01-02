@@ -1,6 +1,8 @@
 -- keep your globals exactly as before
 BWOZombie = BWOZombie or {}
 
+require "BWODebug"
+
 -- consists of IsoZombie instances
 BWOZombie.Cache = BWOZombie.Cache or {}
 
@@ -33,6 +35,13 @@ local function removeZombieFromCaches(id)
     CacheLight[id] = nil
     CacheLightB[id] = nil
     CacheLightZ[id] = nil
+end
+
+local function countTable(t)
+    local c = 0
+    if not t then return c end
+    for _ in pairs(t) do c = c + 1 end
+    return c
 end
 
 local function getRoomId(zombie)
@@ -74,11 +83,33 @@ local function onZombieUpdate(zombie)
     light.z = zombie:getZ()
     light.d = zombie:getDirectionAngle()
 
+    -- Dedicated servers may not have the "Bandit" variable set (it's commonly set client-side).
+    -- Fall back to Bandits GMD cluster state to detect bandits reliably server-side.
     local isBandit = zombie:getVariableBoolean("Bandit")
+    local gmd = nil
+    if (not isBandit) and GetBanditClusterData and id then
+        gmd = GetBanditClusterData(id)
+        if gmd and gmd[id] then
+            isBandit = true
+        end
+    end
+
+    -- If cluster says it's a bandit but the variable isn't set, set it serverside to make downstream logic consistent.
+    if isBandit and (not zombie:getVariableBoolean("Bandit")) then
+        zombie:setVariable("Bandit", true)
+    end
+
     light.isBandit = isBandit
     if isBandit then
-        -- if GetBrain is expensive, consider caching it on enter-bandit only
-        light.brain = GetBrain(zombie)
+        -- Prefer modData brain when present; otherwise pull from cluster data
+        local brain = GetBrain(zombie)
+        if (not brain) and (not gmd) and GetBanditClusterData and id then
+            gmd = GetBanditClusterData(id)
+        end
+        if (not brain) and gmd and id then
+            brain = gmd[id]
+        end
+        light.brain = brain
         light.rid = getRoomId(zombie)
         CacheLightB[id] = light
         CacheLightZ[id] = nil
@@ -101,8 +132,22 @@ local function onZombieDead(zombie)
     if not isServer() then return end
     local id = GetZombieID(zombie)
     if not id then return end
-    local queue = (BWOGMD and BWOGMD.data and BWOGMD.data.Queue) or ModData.getOrCreate("BWOMP").Queue
-    queue[id] = nil
+
+    -- Always clear BWOMP queue entry so deleter won't keep skipping a dead zombie id.
+    local bwomp = ModData.getOrCreate("BWOMP")
+    if bwomp and bwomp.Queue then
+        bwomp.Queue[id] = nil
+    end
+
+    -- Remove from Bandits cluster if it existed (prevents cluster bloat and runaway "current").
+    if GetBanditClusterData then
+        local gmd = GetBanditClusterData(id)
+        if gmd and gmd[id] then
+            gmd[id] = nil
+            TransmitBanditCluster(id)
+        end
+    end
+
     if Cache[id] then removeZombieFromCaches(id) end
 end
 
@@ -119,6 +164,11 @@ local function flush()
     local zombieList = cell:getZombieList()
     local zombieListSize = zombieList:size()
 
+    -- Keep bandit queue in BWOMP moddata up-to-date even if OnZombieUpdate is not firing often.
+    local bwomp = ModData.getOrCreate("BWOMP")
+    if not bwomp.Queue then bwomp.Queue = {} end
+    local queue = bwomp.Queue
+
     for i = 0, zombieListSize - 1 do
         local zombie = zombieList:get(i)
 
@@ -133,9 +183,33 @@ local function flush()
             local light = {id = id, x = zx, y = zy, z = zz, d = zd}
 
             local isBandit = zombie:getVariableBoolean("Bandit")
+            local brain = nil
+            if not isBandit and GetBanditClusterData and id then
+                local gmd = GetBanditClusterData(id)
+                if gmd and gmd[id] then
+                    isBandit = true
+                    brain = gmd[id]
+                end
+            end
+
+            -- Align variable with cluster-derived truth (important for other systems that only check the variable).
+            if isBandit and (not zombie:getVariableBoolean("Bandit")) then
+                zombie:setVariable("Bandit", true)
+            end
+
+            -- Align BWOMP queue with bandit truth so the zombie deleter can skip bandits.
+            if isBandit then
+                queue[id] = true
+            else
+                queue[id] = nil
+            end
+
             light.isBandit = isBandit
             if isBandit  then
-                light.brain = BanditBrain.Get(zombie)
+                if not brain then
+                    brain = BanditBrain.Get(zombie)
+                end
+                light.brain = brain
                 light.rid = getRoomId(zombie)
                 cacheLightB[id] = light
             else
@@ -151,6 +225,41 @@ local function flush()
     BWOZombie.CacheLight = cacheLight
     BWOZombie.CacheLightB = cacheLightB
     BWOZombie.CacheLightZ = cacheLightZ
+
+    -- IMPORTANT: keep the module-local cache references in sync.
+    -- This file uses local upvalues (Cache/CacheLight/CacheLightB/CacheLightZ) for speed,
+    -- so if we reassign the global tables we must also update these upvalues.
+    Cache = cache
+    CacheLight = cacheLight
+    CacheLightB = cacheLightB
+    CacheLightZ = cacheLightZ
+
+    -- Debug summary (enable by setting VERBOSE_LVL to 4+ in `shared/BWODebug.lua`)
+    if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+        dprint(string.format(
+            "[BWOZombie][flush] zombies=%s cache=%s light=%s lightZ=%s lightB=%s queue=%s",
+            tostring(zombieListSize),
+            tostring(countTable(Cache)),
+            tostring(countTable(CacheLight)),
+            tostring(countTable(CacheLightZ)),
+            tostring(countTable(CacheLightB)),
+            tostring(countTable(queue))
+        ), 4)
+
+        -- Try to explain low lightB: how many entries exist in clusters right now?
+        if BanditClusters and BanditClusterCount then
+            local clusterTotal = 0
+            for c = 0, BanditClusterCount - 1 do
+                local cluster = BanditClusters[c]
+                if cluster then
+                    for _ in pairs(cluster) do
+                        clusterTotal = clusterTotal + 1
+                    end
+                end
+            end
+            dprint(string.format("[BWOZombie][flush] clusterEntriesTotal=%s", tostring(clusterTotal)), 4)
+        end
+    end
 end
 
 -- returns IsoZombie by id

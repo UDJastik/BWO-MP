@@ -2,6 +2,7 @@ require "BanditGMD"
 require "BWODebug"
 require "BWOUtils"
 require "BWOGMD"
+require "BWOZombie"
 BWOPopControl = BWOPopControl or {}
 
 local function normalizeScenario(selected)
@@ -75,12 +76,112 @@ BWOPopControl.Fireman = {}
 BWOPopControl.Fireman.Cooldown = 0
 BWOPopControl.Fireman.On = true
 
+-- =========================================================
+-- Spawn/despawn stats + periodic logging (server-side)
+-- =========================================================
+BWOPopControl.Stats = BWOPopControl.Stats or {
+    street = { spawnedTotal = 0, despawnedTotal = 0, spawnedInterval = 0, despawnedInterval = 0, last = {} },
+    inhabitant = { spawnedTotal = 0, despawnedTotal = 0, spawnedInterval = 0, despawnedInterval = 0, last = {} },
+    survivor = { spawnedTotal = 0, despawnedTotal = 0, spawnedInterval = 0, despawnedInterval = 0, last = {} },
+}
+
+local function fmtNum(n, digits)
+    if n == nil then return "nil" end
+    digits = digits or 0
+    local num = tonumber(n)
+    if not num then return tostring(n) end
+    if digits <= 0 then return tostring(math.floor(num + 0.5)) end
+    return string.format("%." .. tostring(digits) .. "f", num)
+end
+
+local function statsRemember(group, fields)
+    local s = BWOPopControl.Stats and BWOPopControl.Stats[group]
+    if not s then return end
+    s.last = s.last or {}
+    for k, v in pairs(fields or {}) do
+        s.last[k] = v
+    end
+    s.last.worldAge = BWOUtils and BWOUtils.GetWorldAge and BWOUtils.GetWorldAge() or s.last.worldAge
+    local gt = getGameTime()
+    s.last.hour = gt and gt.getHour and gt:getHour() or (s.last.hour or nil)
+end
+
+local function statsInc(group, field, delta)
+    local s = BWOPopControl.Stats and BWOPopControl.Stats[group]
+    if not s then return end
+    delta = delta or 0
+    s[field] = (s[field] or 0) + delta
+end
+
+local function logStatsEvery10Ticks(numTicks)
+    if not isServer() then return end
+    if (numTicks or 0) % 10 ~= 0 then return end
+    refreshScenarioFromGMD()
+
+    local gt = getGameTime()
+    local hour = gt and gt.getHour and gt:getHour() or -1
+    local worldAge = BWOUtils and BWOUtils.GetWorldAge and BWOUtils.GetWorldAge() or -1
+    local players = BWOUtils and BWOUtils.GetAllPlayers and BWOUtils.GetAllPlayers() or {}
+    local pcount = players and #players or 0
+
+    local function line(groupName, key)
+        local s = BWOPopControl.Stats[key]
+        if not s then return end
+        local last = s.last or {}
+        dprint(string.format(
+            "[POP CONTROL][STATS][%s] tick=%s worldAge=%sh hour=%s players=%s scenario=%s | target=%s current=%s missing=%s | spawned(+10t)=%s total=%s | despawned(+10t)=%s total=%s",
+            groupName,
+            tostring(numTicks or "?"),
+            fmtNum(worldAge, 0),
+            tostring(hour),
+            tostring(pcount),
+            tostring(BWOPopControl.Scenario),
+            fmtNum(last.target, 2),
+            fmtNum(last.current, 0),
+            fmtNum(last.missing, 2),
+            tostring(s.spawnedInterval or 0),
+            tostring(s.spawnedTotal or 0),
+            tostring(s.despawnedInterval or 0),
+            tostring(s.despawnedTotal or 0)
+        ), 2)
+
+        -- reset interval counters
+        s.spawnedInterval = 0
+        s.despawnedInterval = 0
+    end
+
+    line("STREETS", "street")
+    line("INHABITANTS", "inhabitant")
+    line("SURVIVORS", "survivor")
+end
+
 local function zombieController(targetCnt)
     if targetCnt > 400 then return end
-    local gmd = GetBanditModData() or {}
-    local queue = gmd.Queue or {}
+    -- IMPORTANT:
+    -- We must not delete bandits while trimming zombies. On dedicated servers, "Queue" can live
+    -- in BWOMP moddata (maintained by BWOZombie), while Bandits base moddata Queue may be nil.
+    local queue = ModData.getOrCreate("BWOMP").Queue
+    if not queue then
+        queue = {}
+        ModData.getOrCreate("BWOMP").Queue = queue
+    end
     local players = BWOUtils.GetAllPlayers()
     if not players or #players == 0 then return end
+
+    local function isBandit(zombie, id)
+        if not zombie or not id then return false end
+        if zombie:getVariableBoolean("Bandit") then return true end
+        if queue and queue[id] then return true end
+        if GetBanditClusterData then
+            local gmd = GetBanditClusterData(id)
+            if gmd and gmd[id] then
+                -- keep queue in sync so future passes are cheap
+                queue[id] = true
+                return true
+            end
+        end
+        return false
+    end
 
     -- пройти по каждому игроку и удалить у него не более targetCnt зомби
     for pIdx = 1, #players do
@@ -94,31 +195,40 @@ local function zombieController(targetCnt)
                 local z = zombieList:get(i)
                 if z then table.insert(zombies, z) end
             end
-            print("[ZOMBIEDEL] Zombielist size: " .. zombieListSize)
+            if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                dprint("[ZOMBIEDEL] Zombielist size: " .. zombieListSize, 4)
+            end
             local removed = 0
             local toDelete = {}
             local desired = targetCnt or 0
             local current = #zombies
             local toRemove = current - desired
             if toRemove <= 0 then
-                print(string.format("[ZOMBIEDEL] current %s <= target %s, nothing to delete for player %s", zombieListSize, desired, player.getUsername and player:getUsername() or tostring(pIdx)))
+                if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                    dprint(string.format("[ZOMBIEDEL] current %s <= target %s, nothing to delete for player %s", zombieListSize, desired, player.getUsername and player:getUsername() or tostring(pIdx)), 4)
+                end
             else
                 -- safety cap to avoid deleting too many per tick
                 if toRemove > 400 then toRemove = 400 end
-                print(string.format("[ZOMBIEDEL] need to delete %s (target %s, current %s)", toRemove, desired, zombieListSize))
+                if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                    dprint(string.format("[ZOMBIEDEL] need to delete %s (target %s, current %s)", toRemove, desired, zombieListSize), 4)
+                end
                 for _, zombie in ipairs(zombies) do
                     if removed >= toRemove then break end
                     local id = BanditUtils.GetZombieID(zombie)
                     if not id then
                         -- log when zombie id cannot be determined to help debugging
-                        print(string.format("[ZOMBIEDEL] Zombie ID not found (index %s)", tostring(i)))
-                    elseif queue and queue[id] then
-                        -- бандит: пропускаем
-                        print(string.format("[ZOMBIEDEL] Skip bandit (id %s) – in queue", tostring(id)))
+                        if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                            dprint(string.format("[ZOMBIEDEL] Zombie ID not found (index %s)", tostring(i)), 4)
+                        end
+                    elseif isBandit(zombie, id) then
+                        -- bandit: skip (don't spam logs)
                     elseif zombie:isAlive() and not zombie:isReanimatedPlayer() then
                         zombie:removeFromWorld()
                         zombie:removeFromSquare()
-                        print("[ZOMBIDEL] Zombie removed on server - " .. id)
+                        if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                            dprint("[ZOMBIDEL] Zombie removed on server - " .. id, 4)
+                        end
                         sendServerCommand(player, "Commands", "ZombieRemove", {zid = id})
                         table.insert(toDelete, id)
                         removed = removed + 1
@@ -126,7 +236,9 @@ local function zombieController(targetCnt)
                 end
             end
 
-            print("[POP CONTROL] Zombie Controller: Target Count: " .. targetCnt .. " Removed count: " .. removed .. " player: " .. (player.getUsername and player:getUsername() or tostring(pIdx)))
+            if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                dprint("[POP CONTROL] Zombie Controller: Target Count: " .. targetCnt .. " Removed count: " .. removed .. " player: " .. (player.getUsername and player:getUsername() or tostring(pIdx)), 4)
+            end
         end
     end
 end
@@ -160,15 +272,16 @@ local function streetsController(targetCnt)
 
     local density = getDensityForPlayer(player)
     local hourmod = getHourScore and getHourScore() or 1
-    local sandbox = (SandboxVars and SandboxVars.BanditsWeekOne) or {}
-    local multiplier = sandbox.StreetsPopMultiplier or 1
-    local target = targetCnt * density * hourmod * multiplier
+    local target = targetCnt * density * hourmod
 
     local programs = {"Walker", "Runner", "Patrol", "Postal", "Gardener", "Janitor", "Entertainer", "Vandal"}
-    local current = countTable(BWOUtils.GetAllBanditByProgram(programs))
+    local current = (BWOUtils.CountBanditByProgram and BWOUtils.CountBanditByProgram(programs)) or countTable(BWOUtils.GetAllBanditByProgram(programs))
 
     local missing = target - current
     if missing > 20 then missing = 20 end
+
+    statsRemember("street", { target = target, current = current, missing = missing })
+
     if missing >= 1 then
         BWOPopControl.StreetsSpawn(missing)
     elseif missing < 0 then
@@ -182,14 +295,16 @@ local function inhabitantsController(targetCnt)
     if not player then return end
 
     local density = getDensityForPlayer(player)
-    local sandbox = (SandboxVars and SandboxVars.BanditsWeekOne) or {}
-    local multiplier = sandbox.InhabitantsPopMultiplier or 1
-    local target = targetCnt * density * multiplier
 
-    local current = countTable(BWOUtils.GetAllBanditByProgram({"Inhabitant"}))
+    local target = targetCnt * density
+
+    local current = (BWOUtils.CountBanditByProgram and BWOUtils.CountBanditByProgram({"Inhabitant"})) or countTable(BWOUtils.GetAllBanditByProgram({"Inhabitant"}))
 
     local missing = target - current
     if missing > 20 then missing = 20 end
+
+    statsRemember("inhabitant", { target = target, current = current, missing = missing })
+
     if missing >= 1 then
         BWOPopControl.InhabitantsSpawn(missing)
     elseif missing < 0 then
@@ -201,10 +316,13 @@ local function survivorsController(targetCnt)
     if not isServer() then return end
 
     local target = targetCnt
-    local current = countTable(BWOUtils.GetAllBanditByProgram({"Survivor"}))
+    local current = (BWOUtils.CountBanditByProgram and BWOUtils.CountBanditByProgram({"Survivor"})) or countTable(BWOUtils.GetAllBanditByProgram({"Survivor"}))
 
     local missing = target - current
     if missing > 4 then missing = 4 end
+
+    statsRemember("survivor", { target = target, current = current, missing = missing })
+
     if missing >= 1 then
         BWOPopControl.SurvivorsSpawn(missing)
     elseif missing < 0 then
@@ -281,7 +399,7 @@ end
 -- server-only wrapper that picks a server-side player and spawns nearby
 BWOPopControl.StreetsSpawn = function(cnt)
     if not isServer() then return end
-    local players = BWOUtils.GetDistantPlayers()
+    local players = BWOUtils.GetAllPlayers()
     if #players == 0 then return end
     cnt = cnt or 1
 
@@ -296,6 +414,7 @@ BWOPopControl.StreetsSpawn = function(cnt)
     local px, py = player:getX(), player:getY()
 
     local args = { size = 1 }
+    local spawned = 0
 
     for i = 1, cnt do
         local x = 35 + ZombRand(25)
@@ -342,55 +461,76 @@ BWOPopControl.StreetsSpawn = function(cnt)
             end
 
             BanditServer.Spawner.Clan(player, args)
+            spawned = spawned + 1
         end
+    end
+
+    if spawned > 0 then
+        statsInc("street", "spawnedTotal", spawned)
+        statsInc("street", "spawnedInterval", spawned)
     end
 end
 
 
--- server-only wrapper that picks a server-side player and despawns distant bandits
 BWOPopControl.StreetsDespawn = function(cnt)
     if not isServer() then return end
-    local players = BWOUtils.GetDistantPlayers()
+    local players = BWOUtils.GetAllPlayers()
     if #players == 0 then return end
     cnt = cnt or 1
 
-    local player = BanditUtils.Choice(players)
-    if not player then return end
-
-    local px, py = player:getX(), player:getY()
     local removePrg = {"Walker", "Runner", "Postal", "Entertainer", "Janitor", "Medic", "Gardener", "Vandal"}
     local zombieList = BWOUtils.GetAllBanditByProgram(removePrg)
-
     local removed = 0
     for _, zombie in pairs(zombieList) do
+        if removed >= cnt then break end
+
         local zx = zombie.x
         local zy = zombie.y
-        local dist = BanditUtils.DistTo(px, py, zx, zy)
 
-        if dist > 50 then
-            local zid = zombie.id
-            local zombieObj = BWOZombie.GetInstanceById(zid)
-            if zombieObj then
-                zombieObj:removeFromSquare()
-                zombieObj:removeFromWorld()
-                sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+        if type(zx) == "number" and type(zy) == "number" then
+            -- despawn only if bandit is further than 50 from ALL players
+            local nearAnyPlayer = false
+            for _, player in pairs(players) do
+                local px, py = player:getX(), player:getY()
+                local dist = BanditUtils.DistTo(px, py, zx, zy)
+                if dist <= 50 then
+                    nearAnyPlayer = true
+                    break
+                end
             end
 
-            -- cleanup caches/mod data
-            BanditZombie.CacheLightZ[zid] = nil
-            local gmd = GetBanditClusterData(zid)
-            if gmd and gmd[zid] then gmd[zid] = nil end
+            if not nearAnyPlayer then
+                local zid = zombie.id
+                local zombieObj = BWOZombie.GetInstanceById(zid)
+                if zombieObj then
+                    zombieObj:removeFromSquare()
+                    zombieObj:removeFromWorld()
+                    -- notify all clients (need a player connection for sendServerCommand)
+                    for _, player in pairs(players) do
+                        sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+                    end
+                end
 
-            removed = removed + 1
-            if removed >= cnt then break end
+                -- cleanup caches/mod data
+                BWOZombie.CacheLightZ[zid] = nil
+                local gmd = GetBanditClusterData(zid)
+                if gmd and gmd[zid] then gmd[zid] = nil end
+
+                removed = removed + 1
+            end
         end
+    end
+
+    if removed > 0 then
+        statsInc("street", "despawnedTotal", removed)
+        statsInc("street", "despawnedInterval", removed)
     end
 end
 
 -- server-side inhabitants spawner (ported from client, no client commands)
 BWOPopControl.InhabitantsSpawn = function(max)
     if not isServer() then return end
-    local players = BWOUtils.GetDistantPlayers()
+    local players = BWOUtils.GetAllPlayers()
     if #players == 0 then return end
 
     max = max or 0
@@ -545,49 +685,73 @@ BWOPopControl.InhabitantsSpawn = function(max)
         i = i + 1
         if i > max then break end
     end
+
+    if i > 0 then
+        statsInc("inhabitant", "spawnedTotal", i)
+        statsInc("inhabitant", "spawnedInterval", i)
+    end
 end
 
 -- server-side inhabitants despawner
 BWOPopControl.InhabitantsDespawn = function(cnt)
     if not isServer() then return end
-    local players = BWOUtils.GetDistantPlayers()
+    local players = BWOUtils.GetAllPlayers()
     if #players == 0 then return end
     cnt = cnt or 1
-
-    local player = BanditUtils.Choice(players)
-    if not player then return end
-
-    local px, py = player:getX(), player:getY()
     local removePrg = {"Inhabitant"}
     local zombieList = BWOUtils.GetAllBanditByProgram(removePrg)
 
     local i = 0
     for _, zombie in pairs(zombieList) do
+        if i >= cnt then break end
+
         local zx = zombie.x
         local zy = zombie.y
-        local dist = BanditUtils.DistTo(px, py, zx, zy)
-        
-        if dist > 50 then
-            local zid = zombie.id
-            local zombieObj = BanditZombie.GetInstanceById(zid)
-            if zombieObj then
-                zombieObj:removeFromSquare()
-                zombieObj:removeFromWorld()
+
+        if type(zx) == "number" and type(zy) == "number" then
+            -- despawn only if bandit is further than 50 from ALL players
+            local nearAnyPlayer = false
+            for _, player in pairs(players) do
+                local px, py = player:getX(), player:getY()
+                local dist = BanditUtils.DistTo(px, py, zx, zy)
+                if dist <= 50 then
+                    nearAnyPlayer = true
+                    break
+                end
             end
 
-            -- keep server state in sync
-            sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+            if not nearAnyPlayer then
+                local zid = zombie.id
+                local zombieObj = BWOZombie.GetInstanceById(zid)
+                if zombieObj then
+                    zombieObj:removeFromSquare()
+                    zombieObj:removeFromWorld()
+                end
 
-            i = i + 1
-            if i >= cnt then break end
+                -- keep server state in sync
+                for _, player in pairs(players) do
+                    sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+                end
+                -- cleanup caches/mod data
+                BWOZombie.CacheLightZ[zid] = nil
+                local gmd = GetBanditClusterData(zid)
+                if gmd and gmd[zid] then gmd[zid] = nil end
+
+                i = i + 1
+            end
         end
+    end
+
+    if i > 0 then
+        statsInc("inhabitant", "despawnedTotal", i)
+        statsInc("inhabitant", "despawnedInterval", i)
     end
 end
 
 -- server-side survivors spawner
 BWOPopControl.SurvivorsSpawn = function(cnt)
     if not isServer() then return end
-    local players = BWOUtils.GetDistantPlayers()
+    local players = BWOUtils.GetAllPlayers()
     if #players == 0 then return end
     cnt = cnt or 1
 
@@ -608,6 +772,7 @@ BWOPopControl.SurvivorsSpawn = function(cnt)
     local gmd = BWOGMD.Get()
     local variant = gmd.Variant
     if BWOVariants[variant].playerIsHostile then args.hostileP = true end
+    local spawned = 0
 
     for i = 1, cnt do
         local x = 35 + ZombRand(25)
@@ -623,45 +788,70 @@ BWOPopControl.SurvivorsSpawn = function(cnt)
             args.z = square:getZ()
 
             BanditServer.Spawner.Clan(player, args)
+            spawned = spawned + 1
         end
+    end
+
+    if spawned > 0 then
+        statsInc("survivor", "spawnedTotal", spawned)
+        statsInc("survivor", "spawnedInterval", spawned)
     end
 end
 
 -- server-side survivors despawner
 BWOPopControl.SurvivorsDespawn = function(cnt)
     if not isServer() then return end
-    local players = BWOUtils.GetDistantPlayers()
+    local players = BWOUtils.GetAllPlayers()
     if #players == 0 then return end
     cnt = cnt or 1
-
-    local player = BanditUtils.Choice(players)
-    if not player then return end
-
-    local px, py = player:getX(), player:getY()
 
     local removePrg = {"Survivor"}
     local zombieList = BWOUtils.GetAllBanditByProgram(removePrg)
 
     local i = 0
     for _, zombie in pairs(zombieList) do
+        if i >= cnt then break end
+
         local zx = zombie.x
         local zy = zombie.y
-        local dist = BanditUtils.DistTo(px, py, zx, zy)
-        
-        if dist > 50 then
-            local zid = zombie.id
-            local zombieObj = BWOZombie.GetInstanceById(zid)
-            if zombieObj then
-                zombieObj:removeFromSquare()
-                zombieObj:removeFromWorld()
+
+        if type(zx) == "number" and type(zy) == "number" then
+            -- despawn only if bandit is further than 50 from ALL players
+            local nearAnyPlayer = false
+            for _, player in pairs(players) do
+                local px, py = player:getX(), player:getY()
+                local dist = BanditUtils.DistTo(px, py, zx, zy)
+                if dist <= 50 then
+                    nearAnyPlayer = true
+                    break
+                end
             end
 
-            -- keep server state in sync
-            sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+            if not nearAnyPlayer then
+                local zid = zombie.id
+                local zombieObj = BWOZombie.GetInstanceById(zid)
+                if zombieObj then
+                    zombieObj:removeFromSquare()
+                    zombieObj:removeFromWorld()
+                end
 
-            i = i + 1
-            if i >= cnt then break end
+                -- keep server state in sync
+                for _, player in pairs(players) do
+                    sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+                end
+                -- cleanup caches/mod data
+                BWOZombie.CacheLightZ[zid] = nil
+                local gmd = GetBanditClusterData(zid)
+                if gmd and gmd[zid] then gmd[zid] = nil end
+
+                i = i + 1
+            end
         end
+    end
+
+    if i > 0 then
+        statsInc("survivor", "despawnedTotal", i)
+        statsInc("survivor", "despawnedInterval", i)
     end
 end
 
@@ -916,3 +1106,7 @@ Events.OnTick.Add(onTick)
 
 Events.EveryOneMinute.Remove(everyOneMinute)
 Events.EveryOneMinute.Add(everyOneMinute)
+
+-- periodic summary log for spawn/despawn counters (every 10 ticks)
+Events.OnTick.Remove(logStatsEvery10Ticks)
+Events.OnTick.Add(logStatsEvery10Ticks)

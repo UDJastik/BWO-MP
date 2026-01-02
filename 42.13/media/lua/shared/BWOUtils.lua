@@ -27,19 +27,83 @@ BWOUtils.GetAllPlayers = function()
 end
 
 BWOUtils.GetAllBanditByProgram = function(programs)
-    local gmd = GetBanditModData() or {}
     local out = {}
-    for id, b in pairs(gmd.Bandits or {}) do
-        local prog = b.brain and b.brain.program and b.brain.program.name
-        if prog then
-            for _, p in pairs(programs) do
-                if prog == p then table.insert(out, b) break end
-            end
+    if not programs or #programs == 0 then return out end
+
+    local progSet = {}
+    for _, p in ipairs(programs) do
+        progSet[p] = true
+    end
+
+    local bandits = (BWOZombie and BWOZombie.GetAllB and BWOZombie.GetAllB()) or {}
+    local debug = (VERBOSE_LVL and VERBOSE_LVL >= 4)
+    local total = 0
+    local missingBrain = 0
+    local missingProgram = 0
+    local matched = 0
+    for _, z in pairs(bandits) do
+        total = total + 1
+        local brain = z.brain
+        if (not brain) and z.id and GetBanditClusterData then
+            local gmd = GetBanditClusterData(z.id)
+            brain = gmd and gmd[z.id]
+        end
+
+        local prog = brain and brain.program and brain.program.name
+        if not brain then
+            missingBrain = missingBrain + 1
+        elseif not prog then
+            missingProgram = missingProgram + 1
+        end
+        if prog and progSet[prog] then
+            z.brain = brain -- чтобы дальше по коду тоже было удобно
+            out[#out + 1] = z -- тут уже есть z.id/z.x/z.y/z.z
+            matched = matched + 1
         end
     end
+
+    if debug and dprint then
+        dprint(string.format(
+            "[BWOUtils][GetAllBanditByProgram] totalCachedB=%s matched=%s missingBrain=%s missingProgram=%s",
+            tostring(total), tostring(matched), tostring(missingBrain), tostring(missingProgram)
+        ), 4)
+    end
+
     return out
 end
 
+-- Count all bandits by program across Bandits cluster data (global), not just currently-loaded zombies.
+-- This prevents endless spawning when bandits exist but are not in the current cell/zombie list.
+BWOUtils.CountBanditByProgram = function(programs)
+    if not programs or #programs == 0 then return 0 end
+
+    local progSet = {}
+    for _, p in ipairs(programs) do
+        progSet[p] = true
+    end
+
+    local cnt = 0
+    if BanditClusters and BanditClusterCount then
+        for c = 0, BanditClusterCount - 1 do
+            local cluster = BanditClusters[c]
+            if cluster then
+                for _, brain in pairs(cluster) do
+                    local prog = brain and brain.program and brain.program.name
+                    if prog and progSet[prog] then
+                        cnt = cnt + 1
+                    end
+                end
+            end
+        end
+        return cnt
+    end
+
+    -- Fallback: count loaded/cache-visible bandits
+    local list = BWOUtils.GetAllBanditByProgram(programs)
+    local c2 = 0
+    for _ in pairs(list) do c2 = c2 + 1 end
+    return c2
+end
 BWOUtils.GetClosestBanditVehicle = function(vehicle)
     local result = {}
 
