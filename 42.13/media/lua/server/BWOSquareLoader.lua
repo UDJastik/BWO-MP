@@ -770,7 +770,9 @@ local processVehicles = function()
                                 local inventory = bandit:getInventory()
                                 inventory:AddItem(key)
                                 local brain = BanditBrain.Get(bandit)
-                                Bandit.UpdateItemsToSpawnAtDeath(bandit, brain)
+                                if type(brain) == "table" and type(brain.weapons) == "table" then
+                                    Bandit.UpdateItemsToSpawnAtDeath(bandit, brain)
+                                end
                             end
                         end
                     end

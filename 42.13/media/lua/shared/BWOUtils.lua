@@ -1,5 +1,61 @@
 BWOUtils = BWOUtils or {}
 
+-- ---------------------------------------------------------------------------
+-- Compatibility helpers
+-- ---------------------------------------------------------------------------
+-- Many Week One scripts (scheduler, TTL objects, etc.) rely on Bandits' `BanditUtils.GetTime()`.
+-- In the MP fork, `BWOUtils` exists but `BanditUtils.GetTime` may be missing, which can crash
+-- server-side code paths (e.g. FriendlyFire -> BWOScheduler.Add).
+BanditUtils = BanditUtils or {}
+if not BanditUtils.GetTime then
+    BanditUtils.GetTime = function()
+        -- Keep the original Week One timing behavior (scaled by day length).
+        local gt = getGameTime and getGameTime() or nil
+        if not gt or not gt.getWorldAgeHours then
+            -- Fallback to real time ms; only used if GameTime isn't available yet.
+            return (getTimestampMs and getTimestampMs()) or 0
+        end
+
+        local dayLen = 60
+        local sbo = getSandboxOptions and getSandboxOptions() or nil
+        if sbo and sbo.getDayLengthMinutes then
+            dayLen = sbo:getDayLengthMinutes() or dayLen
+        end
+        if not dayLen or dayLen <= 0 then dayLen = 60 end
+
+        local coeff = 60 / dayLen
+        return gt:getWorldAgeHours() * 2500000 / 24 / coeff
+    end
+end
+
+-- WeekOne economy helper: used by client crime hooks (e.g. container "buying") and server logic.
+-- MP fork originally missed this function, causing client-side nil-call errors in BWOPlayer.lua.
+if not BanditUtils.AddPriceInflation then
+    BanditUtils.AddPriceInflation = function(price)
+        price = tonumber(price) or 0
+        if price <= 0 then return 0 end
+
+        -- Prefer scheduler's cached world age if available; otherwise use GameTime directly.
+        local wa = 0
+        if BWOScheduler and BWOScheduler.WorldAge then
+            wa = BWOScheduler.WorldAge
+        else
+            local gt = getGameTime and getGameTime() or nil
+            wa = (gt and gt.getWorldAgeHours and gt:getWorldAgeHours()) or 0
+        end
+
+        if wa < 0 then wa = 0 end
+        local day = math.floor(wa / 24)
+
+        local inflation = 0
+        if SandboxVars and SandboxVars.BanditsWeekOne and SandboxVars.BanditsWeekOne.PriceInflation then
+            inflation = SandboxVars.BanditsWeekOne.PriceInflation
+        end
+
+        return math.floor(price * ((1 + inflation / 100) ^ day))
+    end
+end
+
 -- Fisher-Yates shuffle
 BWOUtils.Shuffle = function(t)
     for i = #t, 2, -1 do

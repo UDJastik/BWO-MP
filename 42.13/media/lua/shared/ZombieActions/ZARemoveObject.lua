@@ -42,10 +42,6 @@ ZombieActions.RemoveObject.onComplete = function(zombie, task)
                         square:transmitRemoveItemFromSquare(object)
                     end
 
-                    if BWOScheduler.Anarchy.Transactions then
-                        BWOPlayer.Earn(zombie, 1)
-                    end
-
                     break
                 end
             end

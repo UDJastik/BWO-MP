@@ -78,25 +78,5 @@ ZombieActions.Extinguish.onWorking = function(zombie, task)
 end
 
 ZombieActions.Extinguish.onComplete = function(zombie, task)
-    local cell = getCell()
-    local square = cell:getGridSquare(task.x, task.y, task.z)
-    if square then
-        square:stopFire()
-        local args = {x=task.x, y=task.y, z=task.z, otype="fire"}
-        -- bugged dunno why
-        -- sendClientCommand(getSpecificPlayer(0), 'Commands', 'ObjectRemove', args)
-        BWOServer.Commands.ObjectRemove(getSpecificPlayer(0), args)
-
-        if BWOScheduler.Anarchy.Transactions then
-            BWOPlayer.Earn(zombie, 20)
-        end
-    end
-    if task.item then
-        if task.left then
-            zombie:setSecondaryHandItem(nil)
-        else
-            zombie:setPrimaryHandItem(nil)
-        end
-    end
     return true
 end

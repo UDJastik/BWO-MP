@@ -7,11 +7,146 @@ BWOServerCommands.Events.Ping = function(args)
 end
 
 BWOServerCommands.ZombieRemove = function(args)
-    local zombie = BanditZombie.GetInstanceById(args.zid)
-    if zombie then
-        zombie:removeFromWorld()
-        zombie:removeFromSquare()
+    -- Backwards compatible: old payload only had zid.
+    BWOServerCommands.ZombieRemoveAt(args)
+end
+
+-- BanditsWeekOneMP: server may broadcast "Commands.BanditRemove" to clients.
+-- Treat it as a zombie removal and also clear Bandits client caches if present.
+BWOServerCommands.BanditRemove = function(args)
+    if type(args) ~= "table" then return end
+
+    local zid = args.zid or args.id
+    if zid == nil then return end
+
+    -- Reuse robust removal helper (supports optional x/y/z).
+    BWOServerCommands.ZombieRemoveAt({
+        zid = zid,
+        x = args.x,
+        y = args.y,
+        z = args.z
+    })
+
+    -- Make sure Bandits caches don't keep stale references.
+    if BanditZombie then
+        if BanditZombie.Cache then BanditZombie.Cache[zid] = nil end
+        if BanditZombie.CacheLight then BanditZombie.CacheLight[zid] = nil end
+        if BanditZombie.CacheLightB then BanditZombie.CacheLightB[zid] = nil end
+        if BanditZombie.CacheLightZ then BanditZombie.CacheLightZ[zid] = nil end
     end
 end
+
+-- Robust removal helper: remove nearest zombie to coords (preferred) or by id match (fallback).
+BWOServerCommands.ZombieRemoveAt = function(args)
+    if type(args) ~= "table" then return end
+
+    local function asNumber(v)
+        if v == nil then return nil end
+        if type(v) == "number" then return v end
+        local n = tonumber(v)
+        if n ~= nil then return n end
+        return tonumber(tostring(v))
+    end
+
+    local zidStr = args.zid ~= nil and tostring(args.zid) or nil
+    local tx = asNumber(args.x)
+    local ty = asNumber(args.y)
+    local tz = asNumber(args.z)
+
+    local cell = getCell()
+    local list = cell and cell:getZombieList() or nil
+    if not list then return end
+
+    local best = nil
+    local bestD2 = nil
+
+    -- Prefer coordinate match when available (works even if id mapping differs across client/server).
+    if tx and ty and tz then
+        for i = 0, list:size() - 1 do
+            local z = list:get(i)
+            if z then
+                local dx = z:getX() - tx
+                local dy = z:getY() - ty
+                local dz = (z:getZ() or 0) - tz
+                local d2 = (dx * dx + dy * dy) + (dz * dz * 4)
+                if (bestD2 == nil) or (d2 < bestD2) then
+                    bestD2 = d2
+                    best = z
+                end
+            end
+        end
+
+        -- Require reasonably close match to avoid deleting wrong zombie.
+        if best and bestD2 and bestD2 <= 9.25 then
+            best:removeFromWorld()
+            best:removeFromSquare()
+            return
+        end
+    end
+
+    -- Fallback by id via Bandits helpers if present.
+    if zidStr then
+        -- Try Bandits cache first (banditized entities)
+        if BanditZombie and BanditZombie.GetInstanceById then
+            local z = BanditZombie.GetInstanceById(args.zid)
+            if z then
+                z:removeFromWorld()
+                z:removeFromSquare()
+                return
+            end
+        end
+
+        for i = 0, list:size() - 1 do
+            local z = list:get(i)
+            if z then
+                local id = nil
+                if BanditUtils and BanditUtils.GetZombieID then
+                    id = BanditUtils.GetZombieID(z)
+                end
+                local pid = (z.getPersistentOutfitID and z:getPersistentOutfitID()) or nil
+                local cid = (BanditUtils and BanditUtils.GetCharacterID and BanditUtils.GetCharacterID(z)) or nil
+
+                if (id ~= nil and tostring(id) == zidStr) or
+                   (pid ~= nil and tostring(pid) == zidStr) or
+                   (cid ~= nil and tostring(cid) == zidStr) then
+                    z:removeFromWorld()
+                    z:removeFromSquare()
+                    return
+                end
+            end
+        end
+    end
+end
+
+BWOServerCommands.ForceRemoveResult = function(args)
+    local p = getPlayer()
+    if not p or not p.addLineChatElement then return end
+    if args.ok then
+        p:addLineChatElement("ForceRemove OK: " .. tostring(args.zid) .. " bandit=" .. tostring(args.isBandit), 0.2, 1.0, 0.2)
+    else
+        local extra = ""
+        if args.x ~= nil and args.y ~= nil then
+            extra = extra .. " @(" .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z) .. ")"
+        end
+        if args.listSize ~= nil then
+            extra = extra .. " list=" .. tostring(args.listSize)
+        end
+        p:addLineChatElement("ForceRemove FAIL: " .. tostring(args.zid) .. " (" .. tostring(args.reason) .. ")" .. extra, 1.0, 0.3, 0.3)
+    end
+end
+
+local onServerCommand = function(module, command, args)
+    -- Server sends removal notifications using module "Commands".
+    if module == "Commands" and BWOServerCommands[command] then
+        if type(args) ~= "table" then args = {} end
+        BWOServerCommands[command](args)
+    elseif module == "Events" and BWOServerCommands.Events and BWOServerCommands.Events[command] then
+        if type(args) ~= "table" then args = {} end
+        BWOServerCommands.Events[command](args)
+    end
+end
+
+Events.OnServerCommand.Remove(onServerCommand)
+Events.OnServerCommand.Add(onServerCommand)
 
 

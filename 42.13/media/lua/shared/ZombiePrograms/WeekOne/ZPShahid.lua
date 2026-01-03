@@ -56,7 +56,7 @@ ZombiePrograms.Shahid.Main = function(bandit)
             return {status=true, next="Main", tasks=tasks}
         else
             local params = {x = bandit:getX(), y = bandit:getY()}
-            BWOEvents.Explode(params)
+            BWOUtils.Explode(params)
             return {status=true, next="Main", tasks=tasks}
         end
         

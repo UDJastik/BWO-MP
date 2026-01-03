@@ -5,44 +5,127 @@ BanditPrograms = BanditPrograms or {}
 BanditPrograms.Symptoms = function(bandit)
     local tasks = {}
 
-    local id = BanditUtils.GetCharacterID(bandit)
-    local gameTime = getGameTime()
-    local hour = gameTime:getHour()
-    local minute = gameTime:getMinutes()
+    -- MP version historically ran symptoms unconditionally, even when the global SymptomLevel is 0
+    -- (first ~34 in-game hours). That caused cough/vomit on day 1. Gate symptoms by scheduler level.
+    local symptomLevel = (BWOScheduler and BWOScheduler.SymptomLevel) or 0
+    if symptomLevel <= 0 then
+        return tasks
+    end
 
-    local rn = ZombRand(20)
-    if rn < 14 then
-        local sound 
-        if bandit:isFemale() then
-            sound = "ZSCoughF" .. (1 + ZombRand(4))
-        else
-            sound = "ZSCoughM" .. (1 + ZombRand(4))
+    local pseudoRandom = ZombRand(100)
+
+    if symptomLevel == 1 then
+        if pseudoRandom < 5 then
+            local rn = ZombRand(2)
+            if rn == 0 then
+                local sound
+                if bandit:isFemale() then
+                    sound = "ZSCoughF" .. (1 + ZombRand(4))
+                else
+                    sound = "ZSCoughM" .. (1 + ZombRand(4))
+                end
+                local task = {action="Time", anim="Cough", sound=sound, time=100}
+                table.insert(tasks, task)
+                return tasks
+            else
+                local task = {action="Time", anim="Sneeze", time=100}
+                table.insert(tasks, task)
+                return tasks
+            end
         end
-        local task = {action="Time", anim="Cough", sound=sound, time=100}
-        table.insert(tasks, task)
-        return tasks
-    elseif rn == 14 then
-        local task = {action="Time", anim="PainTorso", time=100}
-        table.insert(tasks, task)
-        return tasks
-    elseif rn == 15 then
-        local task = {action="Time", anim="PainStomach1", time=100}
-        table.insert(tasks, task)
-        return tasks
-    elseif rn == 16 then
-        local task = {action="Time", anim="PainStomach2", time=100}
-        table.insert(tasks, task)
-        return tasks
-    elseif rn == 17 then
-        local task = {action="Time", anim="FeelFeint", time=100}
-        table.insert(tasks, task)
-        return tasks
+    elseif symptomLevel == 2 then
+        if pseudoRandom < 11 then
+            local rn = ZombRand(11)
+            if rn < 7 then
+                local sound
+                if bandit:isFemale() then
+                    sound = "ZSCoughF" .. (1 + ZombRand(4))
+                else
+                    sound = "ZSCoughM" .. (1 + ZombRand(4))
+                end
+                local task = {action="Time", anim="Cough", sound=sound, time=100}
+                table.insert(tasks, task)
+                return tasks
+            elseif rn == 7 then
+                local task = {action="Time", anim="PainTorso", time=100}
+                table.insert(tasks, task)
+                return tasks
+            elseif rn == 8 then
+                local task = {action="Time", anim="PainStomach1", time=100}
+                table.insert(tasks, task)
+                return tasks
+            elseif rn == 9 then
+                local task = {action="Time", anim="PainStomach2", time=100}
+                table.insert(tasks, task)
+                return tasks
+            elseif rn == 10 then
+                local sound = "ZSVomit" .. (1 + ZombRand(4))
+                local task = {action="Vomit", anim="Vomit", sound=sound, time=100}
+                table.insert(tasks, task)
+                return tasks
+            end
+        end
+    elseif symptomLevel == 3 then
+        if pseudoRandom < 15 then
+            local rn = ZombRand(20)
+            if rn < 14 then
+                local sound
+                if bandit:isFemale() then
+                    sound = "ZSCoughF" .. (1 + ZombRand(4))
+                else
+                    sound = "ZSCoughM" .. (1 + ZombRand(4))
+                end
+                local task = {action="Time", anim="Cough", sound=sound, time=100}
+                table.insert(tasks, task)
+                return tasks
+            elseif rn == 14 then
+                local task = {action="Time", anim="PainTorso", time=100}
+                table.insert(tasks, task)
+                return tasks
+            elseif rn == 15 then
+                local task = {action="Time", anim="PainStomach1", time=100}
+                table.insert(tasks, task)
+                return tasks
+            elseif rn == 16 then
+                local task = {action="Time", anim="PainStomach2", time=100}
+                table.insert(tasks, task)
+                return tasks
+            elseif rn == 17 then
+                local task = {action="Time", anim="FeelFeint", time=100}
+                table.insert(tasks, task)
+                return tasks
+            else
+                local sound = "ZSVomit" .. (1 + ZombRand(4))
+                local task = {action="Vomit", anim="Vomit", sound=sound, time=100}
+                table.insert(tasks, task)
+                return tasks
+            end
+        end
+    elseif symptomLevel == 4 then
+        if pseudoRandom < 20 then
+            local rn = ZombRand(20)
+            if rn < 10 then
+                local sound
+                if bandit:isFemale() then
+                    sound = "ZSCoughF" .. (1 + ZombRand(4))
+                else
+                    sound = "ZSCoughM" .. (1 + ZombRand(4))
+                end
+                local task = {action="Vomit", anim="Scramble", sound=sound, time=100}
+                table.insert(tasks, task)
+                return tasks
+            else
+                local sound = "ZSVomit" .. (1 + ZombRand(4))
+                local task = {action="Vomit", anim="Scramble", sound=sound, time=100}
+                table.insert(tasks, task)
+                return tasks
+            end
+        end
     else
-        local sound = "ZSVomit" .. (1 + ZombRand(4))
-        local task = {action="Vomit", anim="Vomit", sound=sound, time=100}
-        table.insert(tasks, task)
-
-        return tasks
+        -- symptomLevel >= 5
+        if ZombRand(6) == 0 then
+            Bandit.UpdateInfection(bandit, 200)
+        end
     end
 
     return tasks
@@ -265,7 +348,8 @@ end
 BanditPrograms.Hide = function(bandit)
     local tasks = {}
 
-    if bandit:getSquare():getRoom() then 
+    local square = bandit and bandit:getSquare() or nil
+    if square and square:getRoom() then 
         local anim = BanditUtils.Choice({"Spooked1", "Spooked2"})
         local task = {action="Time", anim=anim, time=200}
         table.insert(tasks, task)

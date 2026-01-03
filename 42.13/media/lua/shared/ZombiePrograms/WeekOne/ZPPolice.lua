@@ -20,7 +20,9 @@ ZombiePrograms.Police.Main = function(bandit)
     local health = bandit:getHealth()
     local healthMin = 0.7
 
-    if SandboxVars.Bandits.General_RunAway and health < healthMin then
+    -- Default: RunAway enabled unless explicitly disabled in SandboxVars.
+    local runAway = (SandboxVars and SandboxVars.Bandits and SandboxVars.Bandits.General_RunAway) ~= false
+    if runAway and health < healthMin then
         return {status=true, next="Escape", tasks=tasks}
     end
 

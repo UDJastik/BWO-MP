@@ -70,7 +70,7 @@ BWOBuildings.IsEventBuilding = function(building, event)
 end
 
 BWOBuildings.GetEventBuildingCoords = function(event)
-    local gmd = GetBWOModData()
+    local gmd = BWOGMD.Get()
     for key, eb in pairs(gmd.EventBuildings) do
         if eb.event == event then
             return {x=eb.x, y=eb.y}

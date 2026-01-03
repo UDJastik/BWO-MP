@@ -152,8 +152,10 @@ BWOVehicles.VehicleSpawn = function(x, y, dir, btype)
                 sendServerCommand('Commands', 'UpdateVehicle', newargs)
             end
             ]]
+            return vehicle
         end
     end
+    return nil
 end
 
 BWOVehicles.Repair = function(vehicle)

@@ -2,6 +2,7 @@
 BWOZombie = BWOZombie or {}
 
 require "BWODebug"
+require "BWOGMD"
 
 -- consists of IsoZombie instances
 BWOZombie.Cache = BWOZombie.Cache or {}
@@ -45,13 +46,19 @@ local function countTable(t)
 end
 
 local function getRoomId(zombie)
-    local room = zombie:getSquare():getRoom()
-    if room then
-        local roomDef = room:getRoomDef()
-        if roomDef then
-            return roomDef:getIDString()
-        end
-    end
+    -- `zombie:getSquare()` may be Java-null temporarily (streaming/despawn edge cases),
+    -- which would crash when we try to call `:getRoom()` on it.
+    if not zombie then return nil end
+    local square = zombie:getSquare()
+    if not square then return nil end
+
+    local room = square:getRoom()
+    if not room then return nil end
+
+    local roomDef = room:getRoomDef()
+    if not roomDef then return nil end
+
+    return roomDef:getIDString()
 end
 
 local function onZombieUpdate(zombie)
@@ -120,18 +127,50 @@ local function onZombieUpdate(zombie)
     end
     sum = sum + (getTimestampMs() - ts)
     invocations = invocations + 1
-    local queue = (BWOGMD and BWOGMD.data and BWOGMD.data.Queue) or ModData.getOrCreate("BWOMP").Queue
-    if isBandit and zombie:isAlive() then
-        queue[id] = true
-    else
-        queue[id] = nil
-    end
 end
 
 local function onZombieDead(zombie)
     if not isServer() then return end
     local id = GetZombieID(zombie)
+    if (not id) and BanditUtils and BanditUtils.GetCharacterID then
+        id = BanditUtils.GetCharacterID(zombie)
+    end
     if not id then return end
+
+    -- WeekOneMP has an early-world cleanup that removes corpses not present in BWOGMD.DeadBodies.
+    -- In MP, a bandit may die without the local client's OnZombieDead registering it, which can
+    -- make the corpse (and its loot) disappear. Register bandit deaths server-side so the
+    -- cleanup logic doesn't delete them.
+    if BWOScheduler and BWOScheduler.World and BWOScheduler.World.DeadBodyRemover then
+        -- IMPORTANT:
+        -- Some Bandits (notably "civilian"/"army" variants) can die before the server ever sees
+        -- their "Bandit" variable set (spawn/streaming/one-shot edge-case). If we rely only on
+        -- zombie:getVariableBoolean("Bandit"), BWOSquareLoader's early-world DeadBodyRemover will
+        -- delete the corpse (and its loot/clothes) because BWOGMD.DeadBodies isn't populated.
+        -- Detect bandits using the same heuristics as server population control: var OR brain OR cluster.
+        local isBandit = false
+        if zombie.getVariableBoolean and zombie:getVariableBoolean("Bandit") then
+            isBandit = true
+        end
+        if (not isBandit) and BanditBrain and BanditBrain.Get then
+            local brain = BanditBrain.Get(zombie)
+            if brain then isBandit = true end
+        end
+        if (not isBandit) and GetBanditClusterData then
+            local g = GetBanditClusterData(id)
+            if g and g[id] then isBandit = true end
+        end
+
+        if isBandit then
+            local gmd = BWOGMD.Get()
+            if gmd and gmd.DeadBodies then
+                local x, y, z = zombie:getX(), zombie:getY(), zombie:getZ()
+                local key = math.floor(x) .. "-" .. math.floor(y) .. "-" .. math.floor(z)
+                -- keep floats in payload (used by some "react to corpse" behaviors), but key by square coords
+                gmd.DeadBodies[key] = { x = x, y = y, z = z }
+            end
+        end
+    end
 
     -- Always clear BWOMP queue entry so deleter won't keep skipping a dead zombie id.
     local bwomp = ModData.getOrCreate("BWOMP")
@@ -164,11 +203,6 @@ local function flush()
     local zombieList = cell:getZombieList()
     local zombieListSize = zombieList:size()
 
-    -- Keep bandit queue in BWOMP moddata up-to-date even if OnZombieUpdate is not firing often.
-    local bwomp = ModData.getOrCreate("BWOMP")
-    if not bwomp.Queue then bwomp.Queue = {} end
-    local queue = bwomp.Queue
-
     for i = 0, zombieListSize - 1 do
         local zombie = zombieList:get(i)
 
@@ -195,13 +229,6 @@ local function flush()
             -- Align variable with cluster-derived truth (important for other systems that only check the variable).
             if isBandit and (not zombie:getVariableBoolean("Bandit")) then
                 zombie:setVariable("Bandit", true)
-            end
-
-            -- Align BWOMP queue with bandit truth so the zombie deleter can skip bandits.
-            if isBandit then
-                queue[id] = true
-            else
-                queue[id] = nil
             end
 
             light.isBandit = isBandit

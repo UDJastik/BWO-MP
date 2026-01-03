@@ -1,5 +1,8 @@
 require "BWODebug"
 require "BWOUtils"
+require "BWOGMD"
+require "BWOCompatibility"
+require "BWOVehicles"
 
 --[[ 
 
@@ -31,6 +34,117 @@ require "BWOUtils"
 ]]
 
 BWOServerEvents = BWOServerEvents or {}
+
+-- =========================================================
+-- Helpers (Week One MP "services": cops/medics/etc)
+-- =========================================================
+
+local function getSandboxCooldown(key, fallback)
+    if SandboxVars and SandboxVars.BanditsWeekOne and SandboxVars.BanditsWeekOne[key] then
+        return tonumber(SandboxVars.BanditsWeekOne[key]) or fallback
+    end
+    return fallback
+end
+
+local function getAllPlayersSafe()
+    return (BWOUtils and BWOUtils.GetAllPlayers and BWOUtils.GetAllPlayers()) or {}
+end
+
+local function getNearestPlayer(players, x, y)
+    local best = nil
+    local bestD2 = nil
+    for i = 1, #players do
+        local p = players[i]
+        if p then
+            local dx = (p:getX() - x)
+            local dy = (p:getY() - y)
+            local d2 = (dx * dx) + (dy * dy)
+            if not bestD2 or d2 < bestD2 then
+                best = p
+                bestD2 = d2
+            end
+        end
+    end
+    return best
+end
+
+local function sendWorldSound(players, x, y, z, sound, volume)
+    for i = 1, #players do
+        local player = players[i]
+        if player then
+            sendServerCommand("Events", "WorldSound", {
+                pid = player:getOnlineID(),
+                cx = x,
+                cy = y,
+                cz = z,
+                sound = sound,
+                volume = volume or 1,
+            })
+        end
+    end
+end
+
+local function sendSpawnMarkerVehicle(players, cid, x, y, z, hostile, desc)
+    for i = 1, #players do
+        local player = players[i]
+        if player then
+            sendServerCommand("Events", "SpawnGroupVehicle", {
+                pid = player:getOnlineID(),
+                cid = cid,
+                hostile = hostile and true or false,
+                desc = desc,
+                cx = x,
+                cy = y,
+                cz = z,
+            })
+        end
+    end
+end
+
+local function isInCircle(x, y, cx, cy, r)
+    local d2 = (x - cx) ^ 2 + (y - cy) ^ 2
+    return d2 <= r ^ 2
+end
+
+-- Attempts to find a free street square on Nav zone around the incident, not too close to any player.
+local function findResponseVehicleSpot(sx, sy, players)
+    local rmin = 20
+    local rmax = 65
+    local cell = getCell()
+    if not cell then return nil end
+
+    for x = sx - rmax, sx + rmax, 5 do
+        for y = sy - rmax, sy + rmax, 5 do
+            if isInCircle(x, y, sx, sy, rmax) then
+                if BWOUtils.HasZoneType(x, y, 0, "Nav") then
+                    local tooClose = false
+                    for i = 1, #players do
+                        local p = players[i]
+                        if p then
+                            local dist = BanditUtils.DistToManhattan(x, y, p:getX(), p:getY())
+                            if dist <= rmin then
+                                tooClose = true
+                                break
+                            end
+                        end
+                    end
+                    if not tooClose then
+                        local square = cell:getGridSquare(x, y, 0)
+                        if square and square:isFree(false) and not square:getVehicleContainer() then
+                            if (not square.isVehicleIntersecting) or (not square:isVehicleIntersecting()) then
+                                local gt = BanditUtils.GetGroundType and BanditUtils.GetGroundType(square) or nil
+                                if gt == "street" or gt == nil then
+                                    return x, y
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
 
 local addRadio = function(x, y, z)
     local cell = getCell()
@@ -448,13 +562,16 @@ end
 BWOServerEvents.SpawnGroup = function(params)
     dprint("[SERVER_EVENT][INFO][SpawnGroup] INIT", 3)
 
+    params = params or {}
+
     -- sanitize
-    local cid = params.cid and params.cid or Bandit.clanMap.PoliceBlue
-    local program = params.program and params.program or "Bandit"
-    local hostile = params.hostile and params.hostile or false
-    local size = params.size and params.size or 2
-    local dist = params.dist and params.dist or 40
-    local desc = params.desc and params.desc or "Unknown"
+    local cid = params.cid or Bandit.clanMap.PoliceBlue
+    local program = params.program or "Bandit"
+    local hostile = (params.hostile == true)
+    -- backwards/alt keys used by scenarios: intensity, d
+    local size = tonumber(params.size or params.intensity) or 2
+    local dist = tonumber(params.dist or params.d) or 40
+    local desc = params.desc or params.name or "Unknown"
 
     -- const
     local multiplierMin = 0.5
@@ -468,7 +585,7 @@ BWOServerEvents.SpawnGroup = function(params)
         local px, py, pz = playerSelected:getX(), playerSelected:getY(), playerSelected:getZ()
 
         -- spawn point selection
-        local distance = params.dist + ZombRand(10)
+        local distance = dist + ZombRand(10)
         local spawnPoints = BWOUtils.GenerateSpawnPoints(px, py, pz, distance, 1)
         if #spawnPoints == 1 then
             local spawn = spawnPoints[1]
@@ -501,9 +618,9 @@ BWOServerEvents.SpawnGroup = function(params)
                     local paramsClient = {
                         pid = player:getOnlineID(),
                         desc = desc,
-                        cid = params.cid,
-                        name = params.name,
-                        hostile = params.hostile,
+                        cid = cid,
+                        name = params.name or desc,
+                        hostile = hostile,
                         cx = spawn.x,
                         cy = spawn.y,
                         cz = spawn.z
@@ -613,6 +730,284 @@ BWOServerEvents.SpawnGroupVehicle = function(params)
     end
 end
 
+-- params: x, y, z, hostile
+BWOServerEvents.CallCops = function(params)
+    dprint("[SERVER_EVENT][INFO][CallCops] INIT", 3)
+
+    if not (BWOPopControl and BWOPopControl.Police and BWOPopControl.Police.On) then return end
+    if (BWOPopControl.Police.Cooldown or 0) > 0 then return end
+    if not params or params.x == nil or params.y == nil then return end
+
+    local sx = tonumber(params.x)
+    local sy = tonumber(params.y)
+    local sz = tonumber(params.z or 0) or 0
+    local hostile = params.hostile and true or false
+    if not sx or not sy then return end
+
+    local players = getAllPlayersSafe()
+    if #players == 0 then return end
+
+    local vx, vy = findResponseVehicleSpot(sx, sy, players)
+    if not vx or not vy then return end
+
+    local vehicleCount = getCell():getVehicles():size()
+    if vehicleCount < 8 then
+        local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.policeCarChoices))
+        local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
+        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        if vehicle then
+            sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 2, siren = 2})
+        end
+        sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    end
+
+    local cids = {Bandit.clanMap.PoliceBlue, Bandit.clanMap.PoliceGray}
+    local cid = BanditUtils.Choice(cids)
+
+    local args = {
+        cid = cid,
+        size = 2,
+        program = "Police",
+        occupation = "Police",
+        hostileP = hostile,
+        x = vx + 6,
+        y = vy + 6,
+        z = sz,
+    }
+
+    local gmd = BWOGMD.Get()
+    
+
+    local ctxPlayer = getNearestPlayer(players, vx, vy) or players[1]
+    if ctxPlayer then
+        BanditServer.Spawner.Clan(ctxPlayer, args)
+    end
+
+    sendSpawnMarkerVehicle(players, cid, vx, vy, 0, args.hostileP, "Cops")
+
+    BWOPopControl.Police.Cooldown = getSandboxCooldown("PoliceCooldown", 30)
+end
+
+-- params: x, y, z, hostile
+BWOServerEvents.CallSWAT = function(params)
+    dprint("[SERVER_EVENT][INFO][CallSWAT] INIT", 3)
+
+    if not (BWOPopControl and BWOPopControl.SWAT and BWOPopControl.SWAT.On) then return end
+    if (BWOPopControl.SWAT.Cooldown or 0) > 0 then return end
+    if not params or params.x == nil or params.y == nil then return end
+
+    local sx = tonumber(params.x)
+    local sy = tonumber(params.y)
+    local sz = tonumber(params.z or 0) or 0
+    local hostile = params.hostile and true or false
+    if not sx or not sy then return end
+
+    local players = getAllPlayersSafe()
+    if #players == 0 then return end
+
+    local vx, vy = findResponseVehicleSpot(sx, sy, players)
+    if not vx or not vy then return end
+
+    local vehicleCount = getCell():getVehicles():size()
+    if vehicleCount < 8 then
+        local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.SWATCarChoices))
+        local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
+        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        if vehicle then
+            sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 3, siren = 2})
+        end
+        sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    end
+
+    local cid = Bandit.clanMap.SWAT
+    local args = {
+        cid = cid,
+        size = 6,
+        program = "Police",
+        occupation = "Police",
+        hostileP = hostile,
+        x = vx + 6,
+        y = vy + 6,
+        z = sz,
+    }
+
+    local gmd = BWOGMD.Get()
+
+    local ctxPlayer = getNearestPlayer(players, vx, vy) or players[1]
+    if ctxPlayer then
+        BanditServer.Spawner.Clan(ctxPlayer, args)
+    end
+
+    sendSpawnMarkerVehicle(players, cid, vx, vy, 0, args.hostileP, "SWAT")
+
+    BWOPopControl.SWAT.Cooldown = getSandboxCooldown("SWATCooldown", 120)
+end
+
+-- params: x, y, z
+BWOServerEvents.CallMedics = function(params)
+    dprint("[SERVER_EVENT][INFO][CallMedics] INIT", 3)
+
+    if not (BWOPopControl and BWOPopControl.Medics and BWOPopControl.Medics.On) then return end
+    if (BWOPopControl.Medics.Cooldown or 0) > 0 then return end
+    if not params or params.x == nil or params.y == nil then return end
+
+    local sx = tonumber(params.x)
+    local sy = tonumber(params.y)
+    local sz = tonumber(params.z or 0) or 0
+    if not sx or not sy then return end
+
+    local players = getAllPlayersSafe()
+    if #players == 0 then return end
+
+    local vx, vy = findResponseVehicleSpot(sx, sy, players)
+    if not vx or not vy then return end
+
+    local vehicleCount = getCell():getVehicles():size()
+    if vehicleCount < 8 then
+        local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.medicalCarChoices))
+        local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
+        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        if vehicle then
+            sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 1})
+        end
+        sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    end
+
+    local cid = Bandit.clanMap.Medic
+    local args = {
+        cid = cid,
+        size = 2,
+        program = "Medic",
+        occupation = "Medic",
+        hostile = false,
+        hostileP = false,
+        x = vx + 6,
+        y = vy + 6,
+        z = sz,
+    }
+
+    local gmd = BWOGMD.Get()
+
+    local ctxPlayer = getNearestPlayer(players, vx, vy) or players[1]
+    if ctxPlayer then
+        BanditServer.Spawner.Clan(ctxPlayer, args)
+    end
+
+    sendSpawnMarkerVehicle(players, cid, vx, vy, 0, args.hostileP, "Paramedics")
+
+    BWOPopControl.Medics.Cooldown = getSandboxCooldown("MedicsCooldown", 45)
+end
+
+-- params: x, y, z
+BWOServerEvents.CallHazmats = function(params)
+    dprint("[SERVER_EVENT][INFO][CallHazmats] INIT", 3)
+
+    if not (BWOPopControl and BWOPopControl.Hazmats and BWOPopControl.Hazmats.On) then return end
+    if (BWOPopControl.Hazmats.Cooldown or 0) > 0 then return end
+    if not params or params.x == nil or params.y == nil then return end
+
+    local sx = tonumber(params.x)
+    local sy = tonumber(params.y)
+    local sz = tonumber(params.z or 0) or 0
+    if not sx or not sy then return end
+
+    local players = getAllPlayersSafe()
+    if #players == 0 then return end
+
+    local vx, vy = findResponseVehicleSpot(sx, sy, players)
+    if not vx or not vy then return end
+
+    local vehicleCount = getCell():getVehicles():size()
+    if vehicleCount < 8 then
+        local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.hazmatsCarChoices))
+        local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
+        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        if vehicle then
+            sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 1})
+        end
+        sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    end
+
+    local cid = Bandit.clanMap.MedicHazmat
+    local args = {
+        cid = cid,
+        size = 3,
+        program = "Medic",
+        occupation = "Medic",
+        hostile = false,
+        hostileP = false,
+        x = vx + 6,
+        y = vy + 6,
+        z = sz,
+    }
+
+    local gmd = BWOGMD.Get()
+
+    local ctxPlayer = getNearestPlayer(players, vx, vy) or players[1]
+    if ctxPlayer then
+        BanditServer.Spawner.Clan(ctxPlayer, args)
+    end
+
+    sendSpawnMarkerVehicle(players, cid, vx, vy, 0, args.hostileP, "Hazmat")
+
+    BWOPopControl.Hazmats.Cooldown = getSandboxCooldown("HazmatCooldown", 50)
+end
+
+-- params: x, y, z
+BWOServerEvents.CallFireman = function(params)
+    dprint("[SERVER_EVENT][INFO][CallFireman] INIT", 3)
+
+    if not (BWOPopControl and BWOPopControl.Fireman and BWOPopControl.Fireman.On) then return end
+    if (BWOPopControl.Fireman.Cooldown or 0) > 0 then return end
+    if not params or params.x == nil or params.y == nil then return end
+
+    local sx = tonumber(params.x)
+    local sy = tonumber(params.y)
+    local sz = tonumber(params.z or 0) or 0
+    if not sx or not sy then return end
+
+    local players = getAllPlayersSafe()
+    if #players == 0 then return end
+
+    local vx, vy = findResponseVehicleSpot(sx, sy, players)
+    if not vx or not vy then return end
+
+    local vehicleCount = getCell():getVehicles():size()
+    if vehicleCount < 8 then
+        local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.firemanCarChoices))
+        local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
+        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        if vehicle then
+            sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 2})
+        end
+        sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    end
+
+    local cid = Bandit.clanMap.Fireman
+    local args = {
+        cid = cid,
+        size = 6,
+        program = "Fireman",
+        occupation = "Fireman",
+        hostile = false,
+        hostileP = false,
+        x = vx + 6,
+        y = vy + 6,
+        z = sz,
+    }
+
+    local gmd = BWOGMD.Get()
+
+    local ctxPlayer = getNearestPlayer(players, vx, vy) or players[1]
+    if ctxPlayer then
+        BanditServer.Spawner.Clan(ctxPlayer, args)
+    end
+
+    sendSpawnMarkerVehicle(players, cid, vx, vy, 0, args.hostileP, "Firemen")
+
+    BWOPopControl.Fireman.Cooldown = getSandboxCooldown("FiremanCooldown", 25)
+end
+
 -- params: eid, dmin, dmax
 BWOServerEvents.Entertainer = function(params)
     dprint("[SERVER_EVENT][INFO][Entertainer] INIT", 3)
@@ -685,9 +1080,7 @@ BWOServerEvents.Entertainer = function(params)
                 args.occupation = "ClownObese"
             end
 
-            local gmd = GetBWOModData()
-            local variant = gmd.Variant
-            if BWOVariants[variant].playerIsHostile then args.hostileP = true end
+            local gmd = BWOGMD.Get()
 
             BanditServer.Spawner.Clan(playerSelected, args)
             dprint("[SERVER_EVENT][INFO][Entertainer] SPAWN SUCCESSFUL", 3)
@@ -722,8 +1115,8 @@ BWOServerEvents.BuildingParty = function(params)
     local intensity = params.intensity and params.intensity or 8
 
     -- helper to find building that contains desired room
-    local function findBuildingWithRoom(rName)
-        local cell = getCell()
+    local function findBuildingWithRoom(player,rName)
+        local cell = player:getCell()
         local rooms = cell:getRoomList()
         local candidates = {}
         for i = 0, rooms:size() - 1 do
@@ -743,11 +1136,11 @@ BWOServerEvents.BuildingParty = function(params)
     for i = 1, #groups do
         local players = groups[i]
         local playerSelected = BanditUtils.Choice(players)
-        local building = findBuildingWithRoom(roomName)
+        local building = findBuildingWithRoom(playerSelected,roomName)
         if not building then
             dprint("[SERVER_EVENT][INFO][BuildingParty] NO BUILDING FOUND FOR ROOM " .. tostring(roomName), 3)
         else
-            local cell = getCell()
+            local cell = playerSelected:getCell()
             local def = building:getDef()
             local id = def:getKeyId()
 
@@ -846,10 +1239,8 @@ BWOServerEvents.BuildingParty = function(params)
                 program = "Inhabitant",
             }
 
-            local gmd = GetBWOModData()
-            local variant = gmd.Variant
-            if BWOVariants[variant].playerIsHostile then spawnArgs.hostileP = true end
-
+            local gmd = BWOGMD.Get()
+           
             spawnArgs.spawnPoints = {}
             local room = building:getRandomRoom()
             if room then
@@ -912,7 +1303,7 @@ BWOServerEvents.BuildingHome = function(params)
         if not building then
             dprint("[SERVER_EVENT][INFO][BuildingHome] NO BUILDING FOR PLAYER", 3)
         else
-            local cell = getCell()
+            local cell = playerSelected:getCell()
             local def = building:getDef()
             local bx = def:getX()
             local bx2 = def:getX2()
@@ -998,9 +1389,8 @@ BWOServerEvents.BuildingHome = function(params)
                             program = "Inhabitant"
                         }
 
-                        local gmd = GetBWOModData()
-                        local variant = gmd.Variant
-                        if BWOVariants[variant].playerIsHostile then args.hostileP = true end
+                        local gmd = BWOGMD.Get()
+
 
                         args.spawnPoints = {}
                         local room = square:getRoom()

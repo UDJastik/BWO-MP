@@ -82,6 +82,8 @@ end
 -- extra spawn for specific room types
 local function roomSpawner()
     if not scenario then return end
+    -- Only DayOne uses room-based spawns; Week should not.
+    if scenarioName ~= "DayOne" then return end
     
     local roomSpawns = scenario:getRoomSpawns()
 
@@ -130,9 +132,18 @@ end
 local function waitingRoomManager()
     local gmd = BWOGMD.Get()
 
-    if gmd.general.gameStarted then return end
-    dprint("[EVENT_MANAGER][INFO] GAME STARTED: NO", 3)
-
+    if gmd.general.gameStarted then
+        if not scenario then
+            scenarioName = gmd.general.selectedScenario or "Week" -- fallback just in case
+            if BWOScenarios[scenarioName] then
+                scenario = BWOScenarios[scenarioName]:new()
+                dprint("[EVENT_MANAGER][INFO] RESTORED SCENARIO AFTER RESTART: " .. tostring(scenarioName), 3)
+            else
+                dprint("[EVENT_MANAGER][ERR] CANNOT RESTORE SCENARIO: " .. tostring(scenarioName), 1)
+            end
+        end
+        return
+    end
     local gt = getGameTime()
     local startHour = gt:getStartTimeOfDay()
     gt:setTimeOfDay(startHour)

@@ -1,10 +1,16 @@
+require "BWOUtils"
+
 ZombieActions = ZombieActions or {}
 
 ZombieActions.TimeEvent = {}
 ZombieActions.TimeEvent.onStart = function(zombie, task)
-    local gmd = GetBWOModData()
+    local gmd = BWOGMD.Get()
     if task.event then
-        local args = {x=math.floor(task.x), y=math.floor(task.y), z=task.z, otype=task.event, ttl=BanditUtils.GetTime()+100000}
+        local now = (BanditUtils and BanditUtils.GetTime and BanditUtils.GetTime())
+            or (BWOUtils and BWOUtils.GetTime and BWOUtils.GetTime())
+            or (getTimestampMs and getTimestampMs())
+            or 0
+        local args = {x=math.floor(task.x), y=math.floor(task.y), z=task.z, otype=task.event, ttl=now + 100000}
         BWOServer.Commands.ObjectAdd(getSpecificPlayer(0), args)
     end
 

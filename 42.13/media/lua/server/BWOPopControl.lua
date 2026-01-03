@@ -158,8 +158,8 @@ end
 local function zombieController(targetCnt)
     if targetCnt > 400 then return end
     -- IMPORTANT:
-    -- We must not delete bandits while trimming zombies. On dedicated servers, "Queue" can live
-    -- in BWOMP moddata (maintained by BWOZombie), while Bandits base moddata Queue may be nil.
+    -- We must not delete bandits while trimming zombies.
+    -- BWOMP.Queue is reserved for "KEEP" semantics (zombies that should persist).
     local queue = ModData.getOrCreate("BWOMP").Queue
     if not queue then
         queue = {}
@@ -168,18 +168,19 @@ local function zombieController(targetCnt)
     local players = BWOUtils.GetAllPlayers()
     if not players or #players == 0 then return end
 
+    local banditMemo = {}
     local function isBandit(zombie, id)
         if not zombie or not id then return false end
         if zombie:getVariableBoolean("Bandit") then return true end
-        if queue and queue[id] then return true end
+        if banditMemo[id] ~= nil then return banditMemo[id] end
         if GetBanditClusterData then
             local gmd = GetBanditClusterData(id)
             if gmd and gmd[id] then
-                -- keep queue in sync so future passes are cheap
-                queue[id] = true
+                banditMemo[id] = true
                 return true
             end
         end
+        banditMemo[id] = false
         return false
     end
 
@@ -188,6 +189,7 @@ local function zombieController(targetCnt)
         local player = players[pIdx]
         local cell = player and player:getCell()
         if cell then
+            local pid = player.getOnlineID and player:getOnlineID() or pIdx
             local zombieList = cell:getZombieList()
             local zombieListSize = zombieList:size()
             local zombies = {}
@@ -198,40 +200,92 @@ local function zombieController(targetCnt)
             if VERBOSE_LVL and VERBOSE_LVL >= 4 then
                 dprint("[ZOMBIEDEL] Zombielist size: " .. zombieListSize, 4)
             end
+            local desired = targetCnt or 0
+            if desired < 0 then desired = 0 end
+
+            -- Build candidates: real zombies only (exclude bandits), with stable ids.
+            local candidates = {}
+            for _, zombie in ipairs(zombies) do
+                if zombie and zombie:isAlive() and not zombie:isReanimatedPlayer() then
+                    local id = BanditUtils.GetZombieID(zombie)
+                    if not id and BanditUtils.GetCharacterID then
+                        id = BanditUtils.GetCharacterID(zombie)
+                    end
+                    if id and (not isBandit(zombie, id)) then
+                        local dx = zombie:getX() - player:getX()
+                        local dy = zombie:getY() - player:getY()
+                        table.insert(candidates, { id = id, zombie = zombie, d2 = (dx * dx + dy * dy) })
+                    end
+                end
+            end
+
+            -- Sort by distance (nearest first). Tie-breaker: id string.
+            table.sort(candidates, function(a, b)
+                if a.d2 ~= b.d2 then return a.d2 < b.d2 end
+                return tostring(a.id) < tostring(b.id)
+            end)
+
+            -- Determine keep-set for this player.
+            local keep = {}
+            for i = 1, math.min(desired, #candidates) do
+                keep[candidates[i].id] = true
+            end
+
+            -- Update BWOMP.Queue for this player: queue[id] = pid
+            -- Remove old keeps owned by this pid that are no longer in keep-set.
+            for id, owner in pairs(queue) do
+                if owner == pid and (not keep[id]) then
+                    queue[id] = nil
+                end
+            end
+            -- Add keeps
+            for id, _ in pairs(keep) do
+                queue[id] = pid
+            end
+
             local removed = 0
             local toDelete = {}
-            local desired = targetCnt or 0
-            local current = #zombies
+            local current = #candidates
             local toRemove = current - desired
             if toRemove <= 0 then
                 if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-                    dprint(string.format("[ZOMBIEDEL] current %s <= target %s, nothing to delete for player %s", zombieListSize, desired, player.getUsername and player:getUsername() or tostring(pIdx)), 4)
+                    dprint(string.format("[ZOMBIEDEL] current %s <= target %s, nothing to delete for player %s", current, desired, player.getUsername and player:getUsername() or tostring(pIdx)), 4)
                 end
             else
                 -- safety cap to avoid deleting too many per tick
                 if toRemove > 400 then toRemove = 400 end
                 if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-                    dprint(string.format("[ZOMBIEDEL] need to delete %s (target %s, current %s)", toRemove, desired, zombieListSize), 4)
+                    dprint(string.format("[ZOMBIEDEL] need to delete %s (target %s, current %s)", toRemove, desired, current), 4)
                 end
-                for _, zombie in ipairs(zombies) do
+
+                -- Delete farthest first, keep nearest (stable).
+                for i = #candidates, 1, -1 do
                     if removed >= toRemove then break end
-                    local id = BanditUtils.GetZombieID(zombie)
-                    if not id then
-                        -- log when zombie id cannot be determined to help debugging
-                        if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-                            dprint(string.format("[ZOMBIEDEL] Zombie ID not found (index %s)", tostring(i)), 4)
+
+                    local entry = candidates[i]
+                    local id = entry and entry.id or nil
+                    local zombie = entry and entry.zombie or nil
+
+                    if id and zombie and (not keep[id]) then
+                        -- If some other player owns this zombie in queue, don't delete it here.
+                        local owner = queue[id]
+                        if owner ~= nil and owner ~= pid then
+                            -- skip
+                        else
+                            zombie:removeFromWorld()
+                            zombie:removeFromSquare()
+                            if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                                dprint("[ZOMBIDEL] Zombie removed on server - " .. tostring(id), 4)
+                            end
+                        -- Notify ALL clients to remove by coordinates (robust in MP; id mapping can differ).
+                        local playersAll = BWOUtils.GetAllPlayers()
+                        local payload = { zid = id, x = zombie:getX(), y = zombie:getY(), z = zombie:getZ() }
+                        for _, pl in pairs(playersAll or {}) do
+                            sendServerCommand(pl, "Commands", "ZombieRemoveAt", payload)
                         end
-                    elseif isBandit(zombie, id) then
-                        -- bandit: skip (don't spam logs)
-                    elseif zombie:isAlive() and not zombie:isReanimatedPlayer() then
-                        zombie:removeFromWorld()
-                        zombie:removeFromSquare()
-                        if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-                            dprint("[ZOMBIDEL] Zombie removed on server - " .. id, 4)
+                            table.insert(toDelete, id)
+                            removed = removed + 1
                         end
-                        sendServerCommand(player, "Commands", "ZombieRemove", {zid = id})
-                        table.insert(toDelete, id)
-                        removed = removed + 1
                     end
                 end
             end
@@ -507,7 +561,7 @@ BWOPopControl.StreetsDespawn = function(cnt)
                     zombieObj:removeFromWorld()
                     -- notify all clients (need a player connection for sendServerCommand)
                     for _, player in pairs(players) do
-                        sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+                        sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid, x = zx, y = zy, z = zombieObj:getZ() })
                     end
                 end
 
@@ -730,7 +784,7 @@ BWOPopControl.InhabitantsDespawn = function(cnt)
 
                 -- keep server state in sync
                 for _, player in pairs(players) do
-                    sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+                    sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid, x = zx, y = zy, z = zombieObj and zombieObj:getZ() or 0 })
                 end
                 -- cleanup caches/mod data
                 BWOZombie.CacheLightZ[zid] = nil
@@ -770,8 +824,7 @@ BWOPopControl.SurvivorsSpawn = function(cnt)
     }
 
     local gmd = BWOGMD.Get()
-    local variant = gmd.Variant
-    if BWOVariants[variant].playerIsHostile then args.hostileP = true end
+    
     local spawned = 0
 
     for i = 1, cnt do
@@ -837,7 +890,7 @@ BWOPopControl.SurvivorsDespawn = function(cnt)
 
                 -- keep server state in sync
                 for _, player in pairs(players) do
-                    sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid })
+                    sendServerCommand(player, 'Commands', 'BanditRemove', { id = zid, x = zx, y = zy, z = zombieObj and zombieObj:getZ() or 0 })
                 end
                 -- cleanup caches/mod data
                 BWOZombie.CacheLightZ[zid] = nil

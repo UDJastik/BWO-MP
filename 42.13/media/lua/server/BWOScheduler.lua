@@ -1,7 +1,11 @@
 BWOScheduler = BWOScheduler or {}
 
 -- queue of evenst added from schedule to be processed
-BWOScheduler.Events = {}
+BWOScheduler.Events = BWOScheduler.Events or {}
+
+require "BWODebug"
+require "BWOUtils"
+require "BWOServerEvents"
 
 -- general symptoms level 0 - 4
 BWOScheduler.SymptomLevel = 0
@@ -381,16 +385,86 @@ function BWOScheduler.MasterControl()
         BWOPopControl.Security.On = true
         BWOPopControl.Fireman.On = true
     end
+
+    -- cooldown timers (minutes)
+    local function dec(service)
+        if not service then return end
+        local cd = tonumber(service.Cooldown or 0) or 0
+        if cd > 0 then
+            cd = cd - 1
+            if cd < 0 then cd = 0 end
+            service.Cooldown = cd
+        end
+    end
+    dec(BWOPopControl and BWOPopControl.Police)
+    dec(BWOPopControl and BWOPopControl.SWAT)
+    dec(BWOPopControl and BWOPopControl.Security)
+    dec(BWOPopControl and BWOPopControl.Medics)
+    dec(BWOPopControl and BWOPopControl.Hazmats)
+    dec(BWOPopControl and BWOPopControl.Fireman)
 end
 
 function BWOScheduler.Add(eventName, params, delay)
-    event = {}
-    event.start = BanditUtils.GetTime() + delay
-    event.phase = eventName
-    event.params = params
+    if not eventName then return end
+
+    -- Defensive: ensure we always have a queue and a time source.
+    BWOScheduler.Events = BWOScheduler.Events or {}
+
+    local now = 0
+    if BanditUtils and BanditUtils.GetTime then
+        now = BanditUtils.GetTime()
+    elseif getTimestampMs then
+        now = getTimestampMs()
+    end
+
+    local d = tonumber(delay) or 0
+
+    local event = {
+        start = now + d,
+        phase = eventName,
+        params = params,
+    }
     table.insert(BWOScheduler.Events, event)
+end
+
+-- server-side executor for queued scheduler events (created via BWOScheduler.Add)
+BWOScheduler.ProcessQueue = function(ticks)
+    if not isServer() then return end
+    if not BWOScheduler.Events or #BWOScheduler.Events == 0 then return end
+
+    -- throttle to avoid spikes
+    if (ticks or 0) % 5 ~= 0 then return end
+
+    local now = 0
+    if BanditUtils and BanditUtils.GetTime then
+        now = BanditUtils.GetTime()
+    elseif getTimestampMs then
+        now = getTimestampMs()
+    end
+
+    -- consume only one event at a time
+    for i = 1, #BWOScheduler.Events do
+        local ev = BWOScheduler.Events[i]
+        if ev and ev.start and ev.start <= now then
+            local phase = ev.phase
+            local params = ev.params or {}
+
+            if phase and BWOServerEvents and BWOServerEvents[phase] then
+                dprint("[SCHEDULER][INFO] EXECUTING: " .. tostring(phase), 3)
+                BWOServerEvents[phase](params)
+            else
+                dprint("[SCHEDULER][WARN] NO SUCH EVENT: " .. tostring(phase), 2)
+            end
+
+            table.remove(BWOScheduler.Events, i)
+            break
+        end
+    end
 end
 
 Events.EveryOneMinute.Add(BWOScheduler.MasterControl)
 Events.OnGameStart.Add(BWOScheduler.StoreSandboxVars)
 Events.OnGameStart.Add(BWOScheduler.RestoreRepeatingPlaceEvents)
+
+Events.OnTick.Remove(BWOScheduler.ProcessQueue)
+Events.OnTick.Add(BWOScheduler.ProcessQueue)

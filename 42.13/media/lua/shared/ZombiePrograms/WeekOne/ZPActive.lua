@@ -24,7 +24,9 @@ ZombiePrograms.Active.Main = function(bandit)
     local endurance = 0
 
     local coward = math.abs(id) % 2 == 0
-    if SandboxVars.Bandits.General_RunAway and coward then
+    -- Default: RunAway enabled unless explicitly disabled in SandboxVars.
+    local runAway = (SandboxVars and SandboxVars.Bandits and SandboxVars.Bandits.General_RunAway) ~= false
+    if runAway and coward then
         return {status=true, next="Escape", tasks=tasks}
     end
 

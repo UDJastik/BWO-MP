@@ -68,9 +68,7 @@ BWOMenu.SpawnWave = function(player, square, prgName)
         end
     end
 
-    local gmd = GetBWOModData()
-    local variant = gmd.Variant
-    if BWOVariants[variant].playerIsHostile then args.hostileP = true end
+    local gmd = BWOGMD.Get()
 
     sendClientCommand(player, 'Spawner', 'Clan', args)
 end

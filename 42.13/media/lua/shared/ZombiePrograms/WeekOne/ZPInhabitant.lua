@@ -98,7 +98,8 @@ ZombiePrograms.Inhabitant.Main = function(bandit)
             for i=0, playerList:size()-1 do
                 local player = playerList:get(i)
                 if player and not BanditPlayer.IsGhost(player) then
-                    local room = player:getSquare():getRoom()
+                    local square = player:getSquare()
+                    local room = square and square:getRoom() or nil
                     
                     if room then
                         local roomName = room:getName()
