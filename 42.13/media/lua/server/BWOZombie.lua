@@ -116,6 +116,54 @@ local function onZombieUpdate(zombie)
         if (not brain) and gmd and id then
             brain = gmd[id]
         end
+        -- Ensure the brain is attached to the zombie modData (Bandits helpers rely on BanditBrain.Get()).
+        if brain and BanditBrain and BanditBrain.Update then
+            if not GetBrain(zombie) then
+                BanditBrain.Update(zombie, brain)
+                zombie:getModData().brainId = brain.id
+            end
+        end
+
+        -- WeekOneMP safety: ensure Army variants actually have weapons.
+        -- Some spawn paths / profile variants can end up with BareHands + empty firearm slots, which makes Army flee forever.
+        if brain and Bandit and Bandit.clanMap and BanditWeapons and BanditWeapons.Make then
+            local cid = brain.cid or brain.clan
+            local isArmy =
+                (cid == Bandit.clanMap.ArmyGreen) or
+                (cid == Bandit.clanMap.ArmyGreenMask) or
+                (cid == Bandit.clanMap.ArmyDesert) or
+                (cid == Bandit.clanMap.Officer)
+
+            if isArmy then
+                brain.weapons = brain.weapons or {}
+                brain.weapons.primary = brain.weapons.primary or { bulletsLeft = 0, magCount = 0 }
+                brain.weapons.secondary = brain.weapons.secondary or { bulletsLeft = 0, magCount = 0 }
+                if not brain.weapons.melee then
+                    brain.weapons.melee = "Base.BareHands"
+                end
+
+                local hasPrimary = type(brain.weapons.primary) == "table" and brain.weapons.primary.name ~= nil
+                local hasSecondary = type(brain.weapons.secondary) == "table" and brain.weapons.secondary.name ~= nil
+                local hasMelee = brain.weapons.melee and brain.weapons.melee ~= "Base.BareHands"
+
+                if (not hasPrimary) and (not hasSecondary) and (not hasMelee) and (not brain._bwoWeaponsFixed) then
+                    -- Try a few vanilla-safe fallbacks.
+                    local primary = BanditWeapons.Make("Base.AssaultRifle", 2) or BanditWeapons.Make("Base.AssaultRifle2", 2)
+                    local secondary = BanditWeapons.Make("Base.Pistol2", 2) or BanditWeapons.Make("Base.Pistol", 2)
+
+                    if primary then brain.weapons.primary = primary end
+                    if secondary then brain.weapons.secondary = secondary end
+                    brain.weapons.melee = "Base.HuntingKnife"
+                    brain._bwoWeaponsFixed = true
+
+                    -- If this brain comes from a cluster entry, make sure the cluster is transmitted after mutation.
+                    if GetBanditClusterData and TransmitBanditCluster and id then
+                        TransmitBanditCluster(id)
+                    end
+                end
+            end
+        end
+
         light.brain = brain
         light.rid = getRoomId(zombie)
         CacheLightB[id] = light

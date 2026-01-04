@@ -242,7 +242,7 @@ BWOSquareLoader.Burn = function(square)
     if not md.BWO then md.BWO = {} end
     md.BWO.burnt = true
 
-    if BanditUtils.HasZoneType(square:getX(), square:getY(), square:getZ(), "Nav") then
+    if BWOUtils.HasZoneType(square:getX(), square:getY(), square:getZ(), "Nav") then
         local objects = square:getObjects()
         for i=0, objects:size()-1 do
             local object = objects:get(i)
@@ -294,7 +294,7 @@ BWOSquareLoader.Burn = function(square)
             end
             ]]
         end
-    elseif BanditUtils.HasZoneType(square:getX(), square:getY(), square:getZ(), "TownZone") then
+    elseif BWOUtils.HasZoneType(square:getX(), square:getY(), square:getZ(), "TownZone") then
         local rnd = ZombRand(10)
         if rnd == 1 then
             local obj = IsoObject.new(square, "floors_burnt_01_1", "")
@@ -548,7 +548,7 @@ local processSquare = function(square,player)
     if scheduler.DeadBodyAdderDensity and scheduler.DeadBodyAdderDensity > 0 then
         if not md.BWO.dbs then
             local seed = 12345
-            if BanditUtils.HasZoneType(x, y, z, "TownZone") then
+            if BWOUtils.HasZoneType(x, y, z, "TownZone") then
                 local density = scheduler.DeadBodyAdderDensity
 
                 local zone = square:getZone()

@@ -2,6 +2,9 @@ BWOUtils = BWOUtils or {}
 -- Ensure shared helpers exist on the client (MP fork relies on BanditUtils helpers for economy logic).
 require "shared/BWOUtils"
 
+-- Optional compatibility hooks (only activate when the standalone Bandits mod is present).
+require "client/BWOBanditsHooks"
+
 BWOPlayer = BWOPlayer or {}
 
 BWOPlayer.tick = 0
@@ -44,6 +47,15 @@ end
 -- make npcs react to threat possibility (player aiming or swinging weapon)
 BWOPlayer.ActivateTargets = function(character, min, severity)
     if not isLocalPlayer(character) then return end
+    -- Debug (throttled): confirm client is sending ActivateTargets.
+    if (severity or 1) >= 2 then
+        BWOPlayer._dbgATLast = BWOPlayer._dbgATLast or 0
+        local now = (getTimestampMs and getTimestampMs()) or 0
+        if (now - BWOPlayer._dbgATLast) > 750 then
+            BWOPlayer._dbgATLast = now
+            print(string.format("[BWO] send ActivateTargets min=%s severity=%s", tostring(min or 15), tostring(severity or 1)))
+        end
+    end
     sendClientCommand(character, "Commands", "ActivateTargets", {
         min = min or 15,
         severity = severity or 1,
@@ -130,6 +142,11 @@ end
 local onHitZombie = function(zombie, attacker, bodyPartType, handWeapon)
     if not zombie or not attacker then return end
     if not isLocalPlayer(attacker) then return end
+
+    -- Gunshot reaction (MP): ensure nearby NPCs react when a ranged hit actually occurs.
+    if handWeapon and handWeapon.isRanged and handWeapon:isRanged() then
+        BWOPlayer.ActivateTargets(attacker, 40, 3)
+    end
 
     local brain = BanditBrain and BanditBrain.Get and BanditBrain.Get(zombie) or nil
     if brain and brain.program and brain.program.name == "Shahid" then
@@ -514,11 +531,30 @@ local onWeaponSwing = function(character, handWeapon)
     if not character:getPrimaryHandItem() then return end
 
     local severity = 1
-    if primaryItemType == WeaponType.firearm or primaryItemType == WeaponType.handgun then
-        severity = 2
+    -- Prefer weapon instance check (works across different WeaponType casing/enum variants).
+    local isRanged = handWeapon and handWeapon.isRanged and handWeapon:isRanged()
+    if isRanged then
+        -- Distinguish actual gunshots from "threat"/aiming. Server treats severity>=3 as gunshot.
+        severity = 3
+    else
+        -- Fallback: some builds expose WeaponType constants in different casing (FIREARM vs firearm).
+        local WT = WeaponType
+        if WT then
+            if (WT.FIREARM and primaryItemType == WT.FIREARM) or
+               (WT.HANDGUN and primaryItemType == WT.HANDGUN) or
+               (WT.firearm and primaryItemType == WT.firearm) or
+               (WT.handgun and primaryItemType == WT.handgun) then
+                severity = 3
+            end
+        end
     end
 
-    BWOPlayer.ActivateTargets(character, 15, severity)
+    local min = 15
+    if severity >= 3 then
+        -- Gunshots should be heard farther than melee swings.
+        min = 40
+    end
+    BWOPlayer.ActivateTargets(character, min, severity)
 end
 
 -- sleep detector to init dreams
@@ -588,3 +624,12 @@ Events.OnPlayerDeath.Add(onPlayerDeath)
 Events.OnWeaponSwing.Add(onWeaponSwing)
 Events.EveryHours.Add(everyHours)
 Events.OnExitVehicle.Add(onExitVehicle)
+
+-- Debug: one-shot client->server connectivity check (confirms server is actually running this mod).
+Events.OnGameStart.Add(function()
+    if BWOPlayer._pingTestSent then return end
+    local p = getPlayer()
+    if not p then return end
+    BWOPlayer._pingTestSent = true
+    sendClientCommand(p, "Commands", "PingTest", { t = (getTimestampMs and getTimestampMs()) or 0 })
+end)

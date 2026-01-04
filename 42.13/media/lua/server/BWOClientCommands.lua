@@ -4,6 +4,16 @@ require "BWOCompatibility"
 BWOServer = {}
 BWOServer.Commands = {}
 
+-- Debug: confirms this file is actually loaded on the server.
+dprint("[BWO] server loaded: BWOClientCommands.lua", 4)
+
+-- Debug: simple client->server connectivity check (same path as ActivateTargets).
+BWOServer.Commands.PingTest = function(player, args)
+    if not isServer() then return end
+    local who = tostring(player and player.getUsername and player:getUsername() or player)
+    dprint(string.format("[BWO] PingTest received from=%s args=%s", who, tostring(type(args))), 4)
+end
+
 BWOServer.Commands.ObjectAdd = function(player, args)
     local gmd = BWOGMD.Get()
     if not (args.x and args.y and args.z and args.otype) then return end
@@ -110,7 +120,8 @@ BWOServer.Commands.ActivateWitness = function(player, args)
 
     local min = (args and args.min) or 18
 
-    local activatePrograms = {"Patrol", "Inhabitant", "Walker", "Runner", "Postal", "Janitor", "Gardener", "Entertainer", "Vandal", "Medic", "Fireman", "Passenger"}
+    -- Include reactive/combat programs too; otherwise Army/Police already in "Police" won't react to new threats.
+    local activatePrograms = {"Patrol", "Police", "Active", "Inhabitant", "Walker", "Runner", "Postal", "Janitor", "Gardener", "Entertainer", "Vandal", "Medic", "Fireman", "Passenger"}
     local braveList = {
         Bandit.clanMap.PoliceBlue,
         Bandit.clanMap.PoliceGray,
@@ -171,10 +182,71 @@ BWOServer.Commands.ActivateTargets = function(player, args)
     if not isServer() then return end
     if not player then return end
 
+    -- Debug (throttled): confirm server is receiving ActivateTargets.
+    do
+        local severityDbg = (args and args.severity) or 1
+        if severityDbg >= 2 then
+            BWOServer._dbgATLast = BWOServer._dbgATLast or 0
+            local now = (getTimestampMs and getTimestampMs()) or 0
+            if (now - BWOServer._dbgATLast) > 750 then
+                BWOServer._dbgATLast = now
+                dprint(string.format("[ActivateTargets] recv from=%s min=%s severity=%s",
+                    tostring(player and player:getUsername() or player),
+                    tostring((args and args.min) or 15),
+                    tostring(severityDbg)
+                ), 4)
+            end
+        end
+    end
+
+    local function isUnarmedBrain(brain)
+        if type(brain) ~= "table" then return false end
+        local w = brain.weapons
+        if type(w) ~= "table" then return false end
+
+        local melee = w.melee
+        local hasMelee = melee and melee ~= "Base.BareHands"
+        local hasPrimary = type(w.primary) == "table" and w.primary.name ~= nil
+        local hasSecondary = type(w.secondary) == "table" and w.secondary.name ~= nil
+
+        return (not hasMelee) and (not hasPrimary) and (not hasSecondary)
+    end
+
+    local function isUnarmedActor(actor, brain)
+        if isUnarmedBrain(brain) then return true end
+
+        -- Fallback: if brain isn't available/filled, inspect equipped items.
+        if not actor then return false end
+        local p = actor.getPrimaryHandItem and actor:getPrimaryHandItem() or nil
+        local s = actor.getSecondaryHandItem and actor:getSecondaryHandItem() or nil
+        if p and p.IsWeapon and p:IsWeapon() then return false end
+        if s and s.IsWeapon and s:IsWeapon() then return false end
+        return true
+    end
+
+    local function forceProgramStageOnCluster(zid, programName, stage)
+        if not zid then return end
+        if not GetBanditClusterData then return end
+        local gmd = GetBanditClusterData(zid)
+        if not (gmd and gmd[zid]) then return end
+        local brain = gmd[zid]
+        brain.program = brain.program or {}
+        brain.program.name = programName
+        brain.program.stage = stage
+        -- Clear tasks so they don't keep following a stale target.
+        brain.tasks = {}
+
+        -- Transmit to clients so their local caches/AI reflect the change.
+        if TransmitBanditCluster then
+            TransmitBanditCluster(zid)
+        end
+    end
+
     local min = (args and args.min) or 15
     local severity = (args and args.severity) or 1
 
-    local activatePrograms = {"Patrol", "Inhabitant", "Walker", "Runner", "Postal", "Janitor", "Gardener", "Entertainer", "Vandal", "Medic", "Fireman", "Passenger"}
+    -- Also include reactive/combat programs, so already-alert Army/Police can still switch to hide/escape on gunshots.
+    local activatePrograms = {"Patrol", "Police", "Active", "Inhabitant", "Walker", "Runner", "Postal", "Janitor", "Gardener", "Entertainer", "Vandal", "Medic", "Fireman", "Passenger"}
     local braveList = {
         Bandit.clanMap.PoliceBlue,
         Bandit.clanMap.PoliceGray,
@@ -188,6 +260,7 @@ BWOServer.Commands.ActivateTargets = function(player, args)
 
     local witnessList = (BWOZombie and BWOZombie.CacheLightB) or {}
     local wasLegal = false
+    local reacted = 0
     for _, witness in pairs(witnessList) do
         if witness and witness.brain and witness.x and witness.y then
             local dx = player:getX() - witness.x
@@ -201,7 +274,8 @@ BWOServer.Commands.ActivateTargets = function(player, args)
                     if actor then
                         local canSee1 = actor:CanSee(player)
                         local canSee2 = player:CanSee(actor)
-                        if canSee1 and canSee2 then
+                        -- For "gunshot" (severity>=3) react by distance/sound even without LOS.
+                        if (severity >= 3) or (canSee1 and canSee2) then
                             for _, prg in pairs(activatePrograms) do
                                 if witness.brain.program and witness.brain.program.name == prg then
                                     Bandit.ClearTasks(actor)
@@ -214,10 +288,45 @@ BWOServer.Commands.ActivateTargets = function(player, args)
                                         end
                                     end
 
+                                    -- High threat (aiming or gunshot): unarmed NPCs should flee or hide (instead of engaging).
+                                    -- IMPORTANT: do NOT switch them into "Police" main loop, as that may path them *towards* the player.
+                                    if severity >= 2 and isUnarmedActor(actor, witness.brain) then
+                                        -- Update both the live actor and the cluster brain (cluster is authoritative on dedi).
+                                        Bandit.SetProgram(actor, "Active", {})
+
+                                        local didHide = false
+                                        -- If already indoors, prefer hiding in-place / moving to a room.
+                                        if BanditPrograms and BanditPrograms.Hide and Bandit.AddTask and actor:getSquare() and actor:getSquare():getRoom() and (ZombRand(2) == 0) then
+                                            local hideTasks = BanditPrograms.Hide(actor)
+                                            if type(hideTasks) == "table" and #hideTasks > 0 then
+                                                for _, t in ipairs(hideTasks) do
+                                                    Bandit.AddTask(actor, t)
+                                                end
+                                                didHide = true
+                                            end
+                                        end
+
+                                        if (not didHide) and Bandit.SetProgramStage then
+                                            -- Force "Escape" stage so the program doesn't reselect a combat target and walk toward the player.
+                                            Bandit.SetProgramStage(actor, "Escape")
+                                        end
+                                        forceProgramStageOnCluster(witness.id, "Active", "Escape")
+                                        reacted = reacted + 1
+
+                                        if not wasLegal then
+                                            if brave then
+                                                Bandit.Say(actor, "SPOTTED")
+                                            else
+                                                Bandit.Say(actor, "REACTCRIME")
+                                            end
+                                        end
+                                        break
+                                    end
+
                                     if brave then
                                         Bandit.SetProgram(actor, "Police", {})
                                         if not wasLegal then
-                                            if severity == 2 then
+                                            if severity >= 2 then
                                                 Bandit.SetHostileP(actor, true)
                                             end
                                             Bandit.Say(actor, "SPOTTED")
@@ -227,7 +336,7 @@ BWOServer.Commands.ActivateTargets = function(player, args)
                                         if not wasLegal then
                                             local r = 4
                                             if actor:isFemale() then r = 9 end
-                                            if ZombRand(r) == 0 and severity == 2 then
+                                            if ZombRand(r) == 0 and severity >= 2 then
                                                 Bandit.SetHostileP(actor, true)
                                             end
                                             Bandit.Say(actor, "REACTCRIME")
@@ -237,6 +346,98 @@ BWOServer.Commands.ActivateTargets = function(player, args)
                             end
                         end
                     end
+                end
+            end
+        end
+    end
+    if reacted > 0 then
+        dprint(string.format("[ActivateTargets] severity=%s min=%s reacted(unarmed)=%d", tostring(severity), tostring(min), reacted), 4)
+    end
+end
+
+-- =========================================================
+-- Bandits compatibility: react to NPC gunshots (client-reported)
+-- =========================================================
+-- When the Bandits mod is installed, bandit gunshots happen inside ZombieActions.Shoot.onComplete (client-side).
+-- We hook that on the client to report a "gunshot" event to the server. Server then makes nearby unarmed NPCs flee/hide.
+BWOServer.Commands.NPCGunshot = function(player, args)
+    if not isServer() then return end
+    if not args then return end
+
+    local x = tonumber(args.x)
+    local y = tonumber(args.y)
+    local z = tonumber(args.z) or 0
+    if not x or not y then return end
+
+    local radius = tonumber(args.radius) or 40
+    if radius < 1 then return end
+
+    local function isUnarmedBrain(brain)
+        if type(brain) ~= "table" then return false end
+        local w = brain.weapons
+        if type(w) ~= "table" then return false end
+        local melee = w.melee
+        local hasMelee = melee and melee ~= "Base.BareHands"
+        local hasPrimary = type(w.primary) == "table" and w.primary.name ~= nil
+        local hasSecondary = type(w.secondary) == "table" and w.secondary.name ~= nil
+        return (not hasMelee) and (not hasPrimary) and (not hasSecondary)
+    end
+
+    local function isUnarmedActor(actor, brain)
+        if isUnarmedBrain(brain) then return true end
+        if not actor then return false end
+        local p = actor.getPrimaryHandItem and actor:getPrimaryHandItem() or nil
+        local s = actor.getSecondaryHandItem and actor:getSecondaryHandItem() or nil
+        if p and p.IsWeapon and p:IsWeapon() then return false end
+        if s and s.IsWeapon and s:IsWeapon() then return false end
+        return true
+    end
+
+    local function forceProgramStageOnCluster(zid, programName, stage)
+        if not zid then return end
+        if not GetBanditClusterData then return end
+        local gmd = GetBanditClusterData(zid)
+        if not (gmd and gmd[zid]) then return end
+        local brain = gmd[zid]
+        brain.program = brain.program or {}
+        brain.program.name = programName
+        brain.program.stage = stage
+        brain.tasks = {}
+        if TransmitBanditCluster then
+            TransmitBanditCluster(zid)
+        end
+    end
+
+    local witnessList = (BWOZombie and BWOZombie.CacheLightB) or {}
+    for _, witness in pairs(witnessList) do
+        if witness and witness.brain and witness.x and witness.y then
+            local dx = x - witness.x
+            local dy = y - witness.y
+            local dist = math.sqrt(dx * dx + dy * dy)
+            if dist < radius then
+                local actor = BWOZombie and BWOZombie.GetInstanceById and BWOZombie.GetInstanceById(witness.id) or nil
+                if actor and isUnarmedActor(actor, witness.brain) then
+                    Bandit.ClearTasks(actor)
+
+                    -- Prefer Hide (50/50), else Escape stage.
+                    local didHide = false
+                    if BanditPrograms and BanditPrograms.Hide and Bandit.AddTask and (ZombRand(2) == 0) then
+                        local hideTasks = BanditPrograms.Hide(actor)
+                        if type(hideTasks) == "table" and #hideTasks > 0 then
+                            for _, t in ipairs(hideTasks) do
+                                Bandit.AddTask(actor, t)
+                            end
+                            didHide = true
+                        end
+                    end
+
+                    if not didHide then
+                        Bandit.SetProgram(actor, "Active", {})
+                        if Bandit.SetProgramStage then
+                            Bandit.SetProgramStage(actor, "Escape")
+                        end
+                    end
+                    forceProgramStageOnCluster(witness.id, "Active", "Escape")
                 end
             end
         end
@@ -612,6 +813,14 @@ BWOServer.Commands.FriendlyFire = function(player, args)
     if not player then return end
     if not args or not args.zid then return end
 
+    local function isUnarmed(actor)
+        if not actor then return false end
+        if not Bandit or not Bandit.GetWeapons then return false end
+        local weapons = Bandit.GetWeapons(actor)
+        if type(weapons) ~= "table" then return false end
+        return (next(weapons) == nil) or (#weapons == 0)
+    end
+
     -- Identify victim bandit
     local zid = args.zid
     local bandit = BWOZombie and BWOZombie.GetInstanceById and BWOZombie.GetInstanceById(zid) or nil
@@ -658,6 +867,34 @@ BWOServer.Commands.FriendlyFire = function(player, args)
         return
     end
 
+    -- This command is only sent by the attacking client, so it's always player fault.
+    local wasPlayerFault = true
+
+    -- MP fix: also make the *victim* react immediately (previously only witnesses were updated).
+    -- Without this, solitary Police/Security/Army can fail to retaliate when attacked.
+    if wasPlayerFault and not brain.hostileP then
+        Bandit.ClearTasks(bandit)
+        local unarmed = isUnarmed(bandit)
+        if unarmed then
+            -- Unarmed NPCs should flee rather than engage.
+            if brain.occupation == "Police" or brain.occupation == "Security" or brain.occupation == "Army" then
+                Bandit.SetProgram(bandit, "Police", {})
+            else
+                Bandit.SetProgram(bandit, "Active", {})
+            end
+            if Bandit.SetProgramStage then
+                Bandit.SetProgramStage(bandit, "Escape")
+            end
+        else
+            if brain.occupation == "Police" or brain.occupation == "Security" or brain.occupation == "Army" then
+                Bandit.SetProgram(bandit, "Police", {})
+            else
+                Bandit.SetProgram(bandit, "Active", {})
+            end
+        end
+        Bandit.SetHostileP(bandit, true)
+    end
+
     -- who saw this changes program
     local witnessList = (BWOZombie and BWOZombie.CacheLightB) or {}
     for id, witness in pairs(witnessList) do
@@ -674,9 +911,6 @@ BWOServer.Commands.FriendlyFire = function(player, args)
                         y = bandit:getY(),
                         z = bandit:getZ(),
                     }
-
-                    -- This command is only sent by the attacking client, so it's always player fault.
-                    local wasPlayerFault = true
 
                     if brain.id ~= id then
                         if brain.occupation == "Police" then
@@ -705,14 +939,22 @@ BWOServer.Commands.FriendlyFire = function(player, args)
                         if witness.brain.program and witness.brain.program.name == prg then
                             if witness.brain.occupation == "Police" or witness.brain.occupation == "Security" or witness.brain.occupation == "Army" then
                                 Bandit.ClearTasks(actor)
+                                local unarmed = isUnarmed(actor)
                                 Bandit.SetProgram(actor, "Police", {})
+                                if unarmed and Bandit.SetProgramStage then
+                                    Bandit.SetProgramStage(actor, "Escape")
+                                end
                                 if wasPlayerFault then
                                     Bandit.SetHostileP(actor, true)
                                 end
                             else
                                 if ZombRand(4) > 0 then
                                     Bandit.ClearTasks(actor)
+                                    local unarmed = isUnarmed(actor)
                                     Bandit.SetProgram(actor, "Active", {})
+                                    if unarmed and Bandit.SetProgramStage then
+                                        Bandit.SetProgramStage(actor, "Escape")
+                                    end
                                     if wasPlayerFault then
                                         Bandit.SetHostileP(actor, true)
                                     end
