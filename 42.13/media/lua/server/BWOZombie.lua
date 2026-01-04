@@ -241,6 +241,18 @@ end
 local function flush()
     if not isServer() then return end
 
+    -- BWOMP.Queue is used by some population controllers to mark "keep" zombies.
+    -- It might not exist yet (fresh world) and in that case we want a safe empty table
+    -- for debug/diagnostics only.
+    local queue = {}
+    if ModData and ModData.getOrCreate then
+        local bwomp = ModData.getOrCreate("BWOMP")
+        if bwomp then
+            bwomp.Queue = bwomp.Queue or {}
+            queue = bwomp.Queue
+        end
+    end
+
     -- prepare local cache vars
     local cache = {}
     local cacheLight = {}

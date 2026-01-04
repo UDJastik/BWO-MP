@@ -323,6 +323,15 @@ local function trimClustersByProgram(programs, cnt, opts)
 
     if not BanditClusters or not BanditClusterCount then return 0 end
 
+    local function getProgName(brain)
+        if not brain then return nil end
+        local p = brain.program
+        if not p then return nil end
+        if type(p) == "string" then return p end
+        if type(p) == "table" then return p.name or p.Name end
+        return nil
+    end
+
     local progSet = {}
     for _, p in ipairs(programs) do
         progSet[p] = true
@@ -333,7 +342,7 @@ local function trimClustersByProgram(programs, cnt, opts)
         local cluster = BanditClusters[c]
         if cluster then
             for id, brain in pairs(cluster) do
-                local prog = brain and brain.program and brain.program.name
+                local prog = getProgName(brain)
                 if prog and progSet[prog] then
                     if (not skipPermanent) or (not (brain and brain.permanent)) then
                         -- Only remove if the actual IsoZombie is NOT loaded right now.
@@ -518,12 +527,32 @@ BWOPopControl.population = {
     }
 }
 
+-- =========================================================
+-- Sandbox multipliers (server-side)
+-- =========================================================
+local function getSandboxPopMultiplier(group)
+    -- Allow server owners to reduce NPC counts in MP.
+    -- NOTE: options exist in `media/sandbox-options.txt` under BanditsWeekOne.*
+    local sv = SandboxVars and SandboxVars.BanditsWeekOne or nil
+    if not sv then return 1 end
+
+    if group == "inhabitant" then
+        return tonumber(sv.InhabitantsPopMultiplier) or 1
+    elseif group == "street" then
+        return tonumber(sv.StreetsPopMultiplier) or 1
+    end
+    return 1
+end
+
 local function getGroupCount(group, worldAge)
     local periods = BWOPopControl.population[group].periods
     for i = 1, #periods do
         local period = periods[i]
         if worldAge >= period.start and worldAge < period.endt then
-            return period.cnt
+            local base = tonumber(period.cnt) or 0
+            local mult = getSandboxPopMultiplier(group)
+            if mult < 0 then mult = 0 end
+            return base * mult
         end
     end
     return nil

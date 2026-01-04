@@ -1,5 +1,21 @@
 BWOUtils = BWOUtils or {}
 
+-- Brain/program helpers:
+-- Bandits implementations differ a bit between versions/mod forks:
+-- - some store `brain.program = { name = "Walker" }`
+-- - some store `brain.program = "Walker"`
+-- For population control we must accept both, otherwise "current" undercounts and we over-spawn.
+local function getBrainProgramName(brain)
+    if not brain then return nil end
+    local p = brain.program
+    if not p then return nil end
+    if type(p) == "string" then return p end
+    if type(p) == "table" then
+        return p.name or p.Name
+    end
+    return nil
+end
+
 -- ---------------------------------------------------------------------------
 -- Compatibility helpers
 -- ---------------------------------------------------------------------------
@@ -105,7 +121,7 @@ BWOUtils.GetAllBanditByProgram = function(programs)
             brain = gmd and gmd[z.id]
         end
 
-        local prog = brain and brain.program and brain.program.name
+        local prog = getBrainProgramName(brain)
         if not brain then
             missingBrain = missingBrain + 1
         elseif not prog then
@@ -144,7 +160,7 @@ BWOUtils.CountBanditByProgram = function(programs)
             local cluster = BanditClusters[c]
             if cluster then
                 for _, brain in pairs(cluster) do
-                    local prog = brain and brain.program and brain.program.name
+                    local prog = getBrainProgramName(brain)
                     if prog and progSet[prog] then
                         cnt = cnt + 1
                     end
