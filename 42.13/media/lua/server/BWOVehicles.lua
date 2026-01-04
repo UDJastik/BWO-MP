@@ -96,6 +96,10 @@ BWOVehicles.Register = function(vehicle)
 end
 
 BWOVehicles.VehicleSpawn = function(x, y, dir, btype)
+    -- Grid squares are addressed by integer coordinates; Call* events can pass floats.
+    x = math.floor((tonumber(x) or 0) + 0.5)
+    y = math.floor((tonumber(y) or 0) + 0.5)
+
     local square = getCell():getGridSquare(x, y, 0)
     if square then
 
@@ -156,6 +160,42 @@ BWOVehicles.VehicleSpawn = function(x, y, dir, btype)
         end
     end
     return nil
+end
+
+-- Dedicated spawn helper for "emergency services" vehicles (cops/medics/fire/hazmat/SWAT).
+-- Keeps behavior close to SP Week One: empty + repaired, locked up, and ready for lightbar/siren updates.
+BWOVehicles.EmergencyVehicleSpawn = function(x, y, dir, btype)
+    local vehicle = BWOVehicles.VehicleSpawn(x, y, dir, btype)
+    if not vehicle then return nil end
+
+    -- Make it consistent and "service-like".
+    vehicle:setColor(0, 0, 0)
+    vehicle:setTrunkLocked(true)
+
+    -- Tag for server-side limiting/cleanup/debug.
+    local md = vehicle:getModData()
+    if type(md) ~= "table" then md = {} end
+    md.BWO = md.BWO or {}
+    md.BWO.emergencyService = true
+    md.BWO.emergencyType = btype
+
+    for i = 0, vehicle:getMaxPassengers() - 1 do
+        local part = vehicle:getPassengerDoor(i)
+        if part then
+            local door = part:getDoor()
+            if door then
+                door:setLocked(true)
+            end
+        end
+    end
+
+    -- SP uses headlights off by default; lightbar update will make it visible anyway.
+    if vehicle.hasHeadlights and vehicle:hasHeadlights() then
+        vehicle:setHeadlightsOn(false)
+    end
+
+    -- Ensure some fuel (VehicleSpawn already randomizes fuel via Repair()).
+    return vehicle
 end
 
 BWOVehicles.Repair = function(vehicle)

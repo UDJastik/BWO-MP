@@ -72,10 +72,22 @@ end
 
 BWOCompatibility.AddVehicle = function(btype, dir, square)
     local vehicle
-    if getGameVersion() >= 42 then
-        vehicle = addVehicle(btype, square:getX(), square:getY(), square:getZ())
+    -- IMPORTANT (MP): server-side vehicle spawning is reliable via addVehicleDebug().
+    -- addVehicle() often returns nil on dedicated servers (even when the square is free).
+    -- WeekOneMP already uses addVehicleDebug() in other server events (see SpawnGroupVehicle).
+    if isServer and isServer() then
+        if type(addVehicleDebug) == "function" then
+            vehicle = addVehicleDebug(btype, dir or IsoDirections.S, nil, square)
+        elseif type(addVehicle) == "function" then
+            -- fallback (may still fail on dedicated)
+            vehicle = addVehicle(btype, square:getX(), square:getY(), square:getZ())
+        end
     else
-        vehicle = addVehicleDebug(btype, dir, nil, square)
+        if getGameVersion() >= 42 then
+            vehicle = addVehicle(btype, square:getX(), square:getY(), square:getZ())
+        else
+            vehicle = addVehicleDebug(btype, dir, nil, square)
+        end
     end
     return vehicle
 end

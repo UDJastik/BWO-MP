@@ -135,6 +135,56 @@ BWOServerCommands.ForceRemoveResult = function(args)
     end
 end
 
+-- Server uses this to tweak freshly spawned service vehicles (lightbar/siren/alarm/headlights).
+-- Without a client handler, commands are ignored and emergency vehicles appear "silent".
+BWOServerCommands.UpdateVehicle = function(args)
+    if type(args) ~= "table" then return end
+
+    local id = tonumber(args.id)
+    if not id then return end
+
+    local cell = getCell()
+    if not cell then return end
+
+    local list = cell:getVehicles()
+    if not list then return end
+
+    local veh = nil
+    for i = 0, list:size() - 1 do
+        local v = list:get(i)
+        if v and v:getId() == id then
+            veh = v
+            break
+        end
+    end
+    if not veh then return end
+
+    if args.headlights ~= nil and veh.hasHeadlights and veh:hasHeadlights() then
+        veh:setHeadlightsOn(args.headlights and true or false)
+    end
+
+    if args.lightbar ~= nil and veh.hasLightbar and veh:hasLightbar() then
+        veh:setLightbarLightsMode(tonumber(args.lightbar) or 0)
+    end
+
+    if args.siren ~= nil and veh.hasLightbar and veh:hasLightbar() then
+        if veh.setLightbarSirenMode then
+            veh:setLightbarSirenMode(tonumber(args.siren) or 0)
+        end
+    end
+
+    if args.alarm ~= nil and veh.hasAlarm and veh:hasAlarm() then
+        if args.alarm then
+            veh:setAlarmed(true)
+            if veh.triggerAlarm then
+                veh:triggerAlarm()
+            end
+        else
+            veh:setAlarmed(false)
+        end
+    end
+end
+
 local onServerCommand = function(module, command, args)
     -- Server sends removal notifications using module "Commands".
     if module == "Commands" and BWOServerCommands[command] then

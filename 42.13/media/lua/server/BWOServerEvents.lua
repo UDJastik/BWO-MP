@@ -106,8 +106,53 @@ local function isInCircle(x, y, cx, cy, r)
     return d2 <= r ^ 2
 end
 
+-- Count only "emergency service" vehicles spawned by this mod in a radius.
+-- This avoids blocking spawns in dense areas where the loaded cell has many unrelated vehicles.
+local function countEmergencyVehiclesNear(x, y, radius)
+    radius = tonumber(radius) or 120
+    local cell = getCell()
+    if not cell then return 0 end
+    local list = cell:getVehicles()
+    if not list then return 0 end
+
+    local r2 = radius * radius
+    local cnt = 0
+    for i = 0, list:size() - 1 do
+        local v = list:get(i)
+        if v then
+            local md = v:getModData()
+            local bwo = md and md.BWO
+            if bwo and bwo.emergencyService then
+                local dx = (v:getX() - x)
+                local dy = (v:getY() - y)
+                if (dx * dx + dy * dy) <= r2 then
+                    cnt = cnt + 1
+                end
+            end
+        end
+    end
+    return cnt
+end
+
 -- Attempts to find a free street square on Nav zone around the incident, not too close to any player.
+local function isSquareOkForVehicle(square)
+    if not square then return false end
+    if not square:isFree(false) then return false end
+    if square:getVehicleContainer() then return false end
+    if square.isVehicleIntersecting and square:isVehicleIntersecting() then return false end
+    local gt = BanditUtils.GetGroundType and BanditUtils.GetGroundType(square) or nil
+    if gt and gt ~= "street" then return false end
+    return true
+end
+
+-- Attempts to find a free street square on Nav zone around the incident, not too close to any player.
+-- NOTE: In MP, squares can be unloaded. We only accept currently-loaded squares, and we add a fallback
+-- search around the nearest player (which is guaranteed to have loaded chunks).
 local function findResponseVehicleSpot(sx, sy, players)
+    -- normalize to integer grid coords (incoming incident coords can be floats)
+    sx = math.floor((tonumber(sx) or 0) + 0.5)
+    sy = math.floor((tonumber(sy) or 0) + 0.5)
+
     local rmin = 20
     local rmax = 65
     local cell = getCell()
@@ -130,13 +175,38 @@ local function findResponseVehicleSpot(sx, sy, players)
                     end
                     if not tooClose then
                         local square = cell:getGridSquare(x, y, 0)
-                        if square and square:isFree(false) and not square:getVehicleContainer() then
-                            if (not square.isVehicleIntersecting) or (not square:isVehicleIntersecting()) then
-                                local gt = BanditUtils.GetGroundType and BanditUtils.GetGroundType(square) or nil
-                                if gt == "street" or gt == nil then
-                                    return x, y
-                                end
-                            end
+                        if isSquareOkForVehicle(square) then return x, y end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fallback: search around nearest player in loaded area, but still keep some distance.
+    local anchor = getNearestPlayer(players, sx, sy) or players[1]
+    if not anchor then return nil end
+    local px = math.floor(anchor:getX() + 0.5)
+    local py = math.floor(anchor:getY() + 0.5)
+
+    local searchR = 80
+    for rr = rmin, searchR, 5 do
+        for dx = -rr, rr, 5 do
+            local dy = rr
+            local candidates = {
+                {x = px + dx, y = py + dy},
+                {x = px + dx, y = py - dy},
+                {x = px + dy, y = py + dx},
+                {x = px - dy, y = py + dx},
+            }
+            for i = 1, #candidates do
+                local cx, cy = candidates[i].x, candidates[i].y
+                if BWOUtils.HasZoneType(cx, cy, 0, "Nav") then
+                    local sq = cell:getGridSquare(cx, cy, 0)
+                    if isSquareOkForVehicle(sq) then
+                        -- also avoid spawning right next to incident point (visual pop-in)
+                        local distIncident = BanditUtils.DistToManhattan(cx, cy, sx, sy)
+                        if distIncident >= rmin then
+                            return cx, cy
                         end
                     end
                 end
@@ -748,17 +818,36 @@ BWOServerEvents.CallCops = function(params)
     if #players == 0 then return end
 
     local vx, vy = findResponseVehicleSpot(sx, sy, players)
-    if not vx or not vy then return end
+    if not vx or not vy then
+        dprint("[SERVER_EVENT][WARN][CallCops] no vehicle spot near (" .. tostring(sx) .. "," .. tostring(sy) .. ")", 2)
+        return
+    end
 
-    local vehicleCount = getCell():getVehicles():size()
-    if vehicleCount < 8 then
+    local emergencyMax = 2
+    local emergencyNear = countEmergencyVehiclesNear(vx, vy, 140)
+    if emergencyNear < emergencyMax then
         local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.policeCarChoices))
         local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
-        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        local vehicle = BWOVehicles.EmergencyVehicleSpawn(vx, vy, dir, vtype)
         if vehicle then
             sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 2, siren = 2})
+        else
+            dprint("[SERVER_EVENT][WARN][CallCops] vehicle spawn failed @(" .. tostring(vx) .. "," .. tostring(vy) .. ") type=" .. tostring(vtype), 2)
+            -- extra diagnostics: most common cause is non-integer coords or blocked/unloaded square
+            local cx = math.floor((tonumber(vx) or 0) + 0.5)
+            local cy = math.floor((tonumber(vy) or 0) + 0.5)
+            local sq = getCell() and getCell():getGridSquare(cx, cy, 0) or nil
+            if not sq then
+                dprint("[SERVER_EVENT][WARN][CallCops] diag: square nil @(" .. tostring(cx) .. "," .. tostring(cy) .. ")", 2)
+            else
+                dprint("[SERVER_EVENT][WARN][CallCops] diag: free=" .. tostring(sq:isFree(false)) ..
+                    " veh=" .. tostring(sq:getVehicleContainer() ~= nil) ..
+                    " intersect=" .. tostring((sq.isVehicleIntersecting and sq:isVehicleIntersecting()) or false), 2)
+            end
         end
         sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    else
+        dprint("[SERVER_EVENT][INFO][CallCops] skipped vehicle spawn (emergencyNear=" .. tostring(emergencyNear) .. " max=" .. tostring(emergencyMax) .. ")", 3)
     end
 
     local cids = {Bandit.clanMap.PoliceBlue, Bandit.clanMap.PoliceGray}
@@ -806,17 +895,25 @@ BWOServerEvents.CallSWAT = function(params)
     if #players == 0 then return end
 
     local vx, vy = findResponseVehicleSpot(sx, sy, players)
-    if not vx or not vy then return end
+    if not vx or not vy then
+        dprint("[SERVER_EVENT][WARN][CallSWAT] no vehicle spot near (" .. tostring(sx) .. "," .. tostring(sy) .. ")", 2)
+        return
+    end
 
-    local vehicleCount = getCell():getVehicles():size()
-    if vehicleCount < 8 then
+    local emergencyMax = 2
+    local emergencyNear = countEmergencyVehiclesNear(vx, vy, 140)
+    if emergencyNear < emergencyMax then
         local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.SWATCarChoices))
         local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
-        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        local vehicle = BWOVehicles.EmergencyVehicleSpawn(vx, vy, dir, vtype)
         if vehicle then
             sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 3, siren = 2})
+        else
+            dprint("[SERVER_EVENT][WARN][CallSWAT] vehicle spawn failed @(" .. tostring(vx) .. "," .. tostring(vy) .. ") type=" .. tostring(vtype), 2)
         end
         sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    else
+        dprint("[SERVER_EVENT][INFO][CallSWAT] skipped vehicle spawn (emergencyNear=" .. tostring(emergencyNear) .. " max=" .. tostring(emergencyMax) .. ")", 3)
     end
 
     local cid = Bandit.clanMap.SWAT
@@ -860,17 +957,25 @@ BWOServerEvents.CallMedics = function(params)
     if #players == 0 then return end
 
     local vx, vy = findResponseVehicleSpot(sx, sy, players)
-    if not vx or not vy then return end
+    if not vx or not vy then
+        dprint("[SERVER_EVENT][WARN][CallMedics] no vehicle spot near (" .. tostring(sx) .. "," .. tostring(sy) .. ")", 2)
+        return
+    end
 
-    local vehicleCount = getCell():getVehicles():size()
-    if vehicleCount < 8 then
+    local emergencyMax = 2
+    local emergencyNear = countEmergencyVehiclesNear(vx, vy, 140)
+    if emergencyNear < emergencyMax then
         local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.medicalCarChoices))
         local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
-        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        local vehicle = BWOVehicles.EmergencyVehicleSpawn(vx, vy, dir, vtype)
         if vehicle then
             sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 1})
+        else
+            dprint("[SERVER_EVENT][WARN][CallMedics] vehicle spawn failed @(" .. tostring(vx) .. "," .. tostring(vy) .. ") type=" .. tostring(vtype), 2)
         end
         sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    else
+        dprint("[SERVER_EVENT][INFO][CallMedics] skipped vehicle spawn (emergencyNear=" .. tostring(emergencyNear) .. " max=" .. tostring(emergencyMax) .. ")", 3)
     end
 
     local cid = Bandit.clanMap.Medic
@@ -915,17 +1020,25 @@ BWOServerEvents.CallHazmats = function(params)
     if #players == 0 then return end
 
     local vx, vy = findResponseVehicleSpot(sx, sy, players)
-    if not vx or not vy then return end
+    if not vx or not vy then
+        dprint("[SERVER_EVENT][WARN][CallHazmats] no vehicle spot near (" .. tostring(sx) .. "," .. tostring(sy) .. ")", 2)
+        return
+    end
 
-    local vehicleCount = getCell():getVehicles():size()
-    if vehicleCount < 8 then
+    local emergencyMax = 2
+    local emergencyNear = countEmergencyVehiclesNear(vx, vy, 140)
+    if emergencyNear < emergencyMax then
         local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.hazmatsCarChoices))
         local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
-        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        local vehicle = BWOVehicles.EmergencyVehicleSpawn(vx, vy, dir, vtype)
         if vehicle then
             sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 1})
+        else
+            dprint("[SERVER_EVENT][WARN][CallHazmats] vehicle spawn failed @(" .. tostring(vx) .. "," .. tostring(vy) .. ") type=" .. tostring(vtype), 2)
         end
         sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    else
+        dprint("[SERVER_EVENT][INFO][CallHazmats] skipped vehicle spawn (emergencyNear=" .. tostring(emergencyNear) .. " max=" .. tostring(emergencyMax) .. ")", 3)
     end
 
     local cid = Bandit.clanMap.MedicHazmat
@@ -970,17 +1083,25 @@ BWOServerEvents.CallFireman = function(params)
     if #players == 0 then return end
 
     local vx, vy = findResponseVehicleSpot(sx, sy, players)
-    if not vx or not vy then return end
+    if not vx or not vy then
+        dprint("[SERVER_EVENT][WARN][CallFireman] no vehicle spot near (" .. tostring(sx) .. "," .. tostring(sy) .. ")", 2)
+        return
+    end
 
-    local vehicleCount = getCell():getVehicles():size()
-    if vehicleCount < 8 then
+    local emergencyMax = 2
+    local emergencyNear = countEmergencyVehiclesNear(vx, vy, 140)
+    if emergencyNear < emergencyMax then
         local vtype = BWOCompatibility.GetCarType(BanditUtils.Choice(BWOVehicles.firemanCarChoices))
         local dir = BanditUtils.Choice({IsoDirections.N, IsoDirections.S, IsoDirections.E, IsoDirections.W})
-        local vehicle = BWOVehicles.VehicleSpawn(vx, vy, dir, vtype)
+        local vehicle = BWOVehicles.EmergencyVehicleSpawn(vx, vy, dir, vtype)
         if vehicle then
             sendServerCommand('Commands', 'UpdateVehicle', {id = vehicle:getId(), lightbar = 2})
+        else
+            dprint("[SERVER_EVENT][WARN][CallFireman] vehicle spawn failed @(" .. tostring(vx) .. "," .. tostring(vy) .. ") type=" .. tostring(vtype), 2)
         end
         sendWorldSound(players, vx, vy, 0, "ZSPoliceCar1", 1)
+    else
+        dprint("[SERVER_EVENT][INFO][CallFireman] skipped vehicle spawn (emergencyNear=" .. tostring(emergencyNear) .. " max=" .. tostring(emergencyMax) .. ")", 3)
     end
 
     local cid = Bandit.clanMap.Fireman
