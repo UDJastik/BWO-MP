@@ -304,6 +304,86 @@ local function countTable(tbl)
     return c
 end
 
+-- ---------------------------------------------------------------------------
+-- Cluster cleanup helpers
+-- ---------------------------------------------------------------------------
+-- Population controllers may count NPCs via Bandits' global clusters (ModData),
+-- while despawners only see currently-loaded IsoZombies. When players travel far,
+-- unloaded NPC objects can disappear but their cluster entries remain, bloating
+-- counts ("current") and leaking memory. This helper prunes stale cluster entries
+-- for specific programs if the corresponding IsoZombie is not currently loaded.
+local function trimClustersByProgram(programs, cnt, opts)
+    if not isServer() then return 0 end
+    if not programs or #programs == 0 then return 0 end
+    cnt = tonumber(cnt) or 0
+    if cnt <= 0 then return 0 end
+
+    opts = opts or {}
+    local skipPermanent = (opts.skipPermanent ~= false) -- default true
+
+    if not BanditClusters or not BanditClusterCount then return 0 end
+
+    local progSet = {}
+    for _, p in ipairs(programs) do
+        progSet[p] = true
+    end
+
+    local candidates = {}
+    for c = 0, BanditClusterCount - 1 do
+        local cluster = BanditClusters[c]
+        if cluster then
+            for id, brain in pairs(cluster) do
+                local prog = brain and brain.program and brain.program.name
+                if prog and progSet[prog] then
+                    if (not skipPermanent) or (not (brain and brain.permanent)) then
+                        -- Only remove if the actual IsoZombie is NOT loaded right now.
+                        local loaded = (BWOZombie and BWOZombie.GetInstanceById and BWOZombie.GetInstanceById(id)) ~= nil
+                        if not loaded then
+                            candidates[#candidates + 1] = { c = c, id = id, born = (brain and brain.born) or 0 }
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if #candidates == 0 then return 0 end
+
+    -- Prefer removing oldest entries first (more likely stale).
+    table.sort(candidates, function(a, b)
+        return (a.born or 0) < (b.born or 0)
+    end)
+
+    local removed = 0
+    local touched = {}
+    for _, v in ipairs(candidates) do
+        if removed >= cnt then break end
+        local cluster = BanditClusters[v.c]
+        if cluster and cluster[v.id] then
+            cluster[v.id] = nil
+            touched[v.c] = true
+            removed = removed + 1
+
+            -- best-effort: keep WeekOneMP caches in sync (should usually be nil already)
+            if BWOZombie then
+                if BWOZombie.Cache then BWOZombie.Cache[v.id] = nil end
+                if BWOZombie.CacheLight then BWOZombie.CacheLight[v.id] = nil end
+                if BWOZombie.CacheLightB then BWOZombie.CacheLightB[v.id] = nil end
+                if BWOZombie.CacheLightZ then BWOZombie.CacheLightZ[v.id] = nil end
+            end
+        end
+    end
+
+    -- MP sync: transmit only the clusters we touched.
+    if removed > 0 and TransmitBanditClusterExpicit then
+        for c, _ in pairs(touched) do
+            TransmitBanditClusterExpicit(c)
+        end
+    end
+
+    return removed
+end
+
 local function pickDensityPlayer()
     local players = BWOUtils.GetAllPlayers()
     if not players or #players == 0 then return nil end
@@ -387,52 +467,52 @@ end
 BWOPopControl.population = {
     zombie = {
         periods = {
-            [1] = {start=0, endt=110, cnt=0}, -- 110
-            [2] = {start=110, endt=118, cnt=1}, -- 8
-            [3] = {start=118, endt=123, cnt=2}, -- 3
-            [4] = {start=123, endt=125, cnt=3}, -- 2
-            [5] = {start=125, endt=126, cnt=5}, -- 1
-            [6] = {start=126, endt=127, cnt=8},
-            [7] = {start=127, endt=128, cnt=13},
-            [8] = {start=128, endt=100000, cnt=1000},
+            [1] = {start=0, endt=24, cnt=0}, -- 110
+            [2] = {start=24, endt=48, cnt=1}, -- 8
+            [3] = {start=48, endt=72, cnt=2}, -- 3
+            [4] = {start=72, endt=96, cnt=3}, -- 2
+            [5] = {start=96, endt=110, cnt=5}, -- 1
+            [6] = {start=110, endt=134, cnt=8},
+            [7] = {start=134, endt=182, cnt=13},
+            [8] = {start=182, endt=100000, cnt=1000},
         },
         control = zombieController
     },
     inhabitant = {
         periods = {
-            [1] = {start=0, endt=128, cnt=75},
-            [2] = {start=128, endt=129, cnt=50},
-            [3] = {start=129, endt=130, cnt=40},
-            [4] = {start=130, endt=131, cnt=30},
-            [5] = {start=131, endt=132, cnt=15},
-            [6] = {start=132, endt=133, cnt=15},
-            [7] = {start=133, endt=170, cnt=4},
-            [8] = {start=170, endt=100000, cnt=0},
+            [1] = {start=0, endt=24, cnt=75},
+            [2] = {start=24, endt=48, cnt=50},
+            [3] = {start=48, endt=72, cnt=40},
+            [4] = {start=72, endt=96, cnt=30},
+            [5] = {start=96, endt=110, cnt=15},
+            [6] = {start=110, endt=134, cnt=15},
+            [7] = {start=134, endt=182, cnt=4},
+            [8] = {start=182, endt=100000, cnt=0},
         },
         control = inhabitantsController
     },
     street = {
         periods = {
-            [1] = {start=0, endt=128, cnt=46},
-            [2] = {start=128, endt=129, cnt=53},
-            [3] = {start=129, endt=130, cnt=56},
-            [4] = {start=130, endt=131, cnt=59},
-            [5] = {start=131, endt=132, cnt=62},
-            [6] = {start=132, endt=133, cnt=55},
-            [7] = {start=133, endt=170, cnt=1},
-            [8] = {start=170, endt=100000, cnt=0},
+            [1] = {start=0, endt=24, cnt=46},
+            [2] = {start=24, endt=48, cnt=53},
+            [3] = {start=48, endt=72, cnt=56},
+            [4] = {start=72, endt=96, cnt=59},
+            [5] = {start=96, endt=110, cnt=62},
+            [6] = {start=110, endt=134, cnt=55},
+            [7] = {start=134, endt=182, cnt=1},
+            [8] = {start=182, endt=100000, cnt=0},
         },
         control = streetsController
     },
     survivor = {
         periods = {
-            [1] = {start=0, endt=129, cnt=0},
-            [2] = {start=129, endt=130, cnt=2},
-            [3] = {start=130, endt=131, cnt=3},
-            [4] = {start=131, endt=132, cnt=5},
-            [5] = {start=132, endt=133, cnt=8},
-            [6] = {start=133, endt=170, cnt=6},
-            [7] = {start=170, endt=100000, cnt=0},
+            [1] = {start=0, endt=24, cnt=0},
+            [2] = {start=24, endt=48, cnt=2},
+            [3] = {start=48, endt=72, cnt=3},
+            [4] = {start=72, endt=96, cnt=5},
+            [5] = {start=96, endt=110, cnt=8},
+            [6] = {start=110, endt=134, cnt=6},
+            [7] = {start=134, endt=100000, cnt=0},
         },
         control = survivorsController
     }
@@ -573,6 +653,13 @@ BWOPopControl.StreetsDespawn = function(cnt)
                 removed = removed + 1
             end
         end
+    end
+
+    -- If we still need to despawn but none are loaded (or not enough),
+    -- prune stale BanditClusters entries for these programs.
+    if removed < cnt then
+        local extra = trimClustersByProgram(removePrg, (cnt - removed))
+        removed = removed + extra
     end
 
     if removed > 0 then
@@ -796,6 +883,13 @@ BWOPopControl.InhabitantsDespawn = function(cnt)
         end
     end
 
+    -- If we still need to despawn but none are loaded (or not enough),
+    -- prune stale BanditClusters entries for this program.
+    if i < cnt then
+        local extra = trimClustersByProgram(removePrg, (cnt - i))
+        i = i + extra
+    end
+
     if i > 0 then
         statsInc("inhabitant", "despawnedTotal", i)
         statsInc("inhabitant", "despawnedInterval", i)
@@ -900,6 +994,13 @@ BWOPopControl.SurvivorsDespawn = function(cnt)
                 i = i + 1
             end
         end
+    end
+
+    -- If we still need to despawn but none are loaded (or not enough),
+    -- prune stale BanditClusters entries for this program.
+    if i < cnt then
+        local extra = trimClustersByProgram(removePrg, (cnt - i))
+        i = i + extra
     end
 
     if i > 0 then
