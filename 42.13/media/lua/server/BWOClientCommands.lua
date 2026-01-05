@@ -103,10 +103,28 @@ local function bwoGiveMoney(player, amount)
     if not inv then return end
     for i = 1, amount do
         local item = BanditCompatibility and BanditCompatibility.InstanceItem and BanditCompatibility.InstanceItem("Base.Money") or nil
+        if (not item) and InventoryItemFactory and InventoryItemFactory.CreateItem then
+            item = InventoryItemFactory.CreateItem("Base.Money")
+        end
         if item then
             inv:AddItem(item)
         end
     end
+end
+
+-- Give SP-like starting cash once per character (MP safe).
+local function bwoEnsureStartingCash(player)
+    if not player then return end
+    local md = player:getModData()
+    md.BWO = md.BWO or {}
+    if md.BWO.startingCashGranted then return end
+
+    -- SP logic: 25 + ZombRand(60)
+    local amount = 25 + ZombRand(60)
+    bwoGiveMoney(player, amount)
+
+    md.BWO.startingCashGranted = true
+    md.BWO.startingCashAmount = amount
 end
 
 -- =========================================================
@@ -503,6 +521,7 @@ BWOServer.Commands.MoneyPay = function(player, args)
 
     local amount = args and tonumber(args.amount) or 0
     if amount <= 0 then return end
+    local itemid = (args and args.itemid) or nil
 
     local function predicateMoney(item)
         return item and item.getType and item:getType() == "Money"
@@ -518,13 +537,33 @@ BWOServer.Commands.MoneyPay = function(player, args)
         for i = 1, amount do
             inv:RemoveOneOf("Money", true)
         end
+        -- Inform client so it can mark the purchased item as bought (prevents double-charge).
+        sendServerCommand("Commands", "MoneyPayResult", {
+            pid = player:getOnlineID(),
+            ok = true,
+            amount = amount,
+            itemid = itemid
+        })
     else
-        -- Not enough money: treat as theft attempt (optional)
+        -- Not enough money: treat as theft attempt (SP-like)
         local witnessMin = args and tonumber(args.witnessMin) or nil
         if witnessMin then
             BWOServer.Commands.ActivateWitness(player, { min = witnessMin })
         end
+        sendServerCommand("Commands", "MoneyPayResult", {
+            pid = player:getOnlineID(),
+            ok = false,
+            amount = amount,
+            itemid = itemid
+        })
     end
+end
+
+-- Client calls this once on join/load to ensure the character has starting cash (covers existing saves).
+BWOServer.Commands.EnsureStartingCash = function(player, args)
+    if not isServer() then return end
+    if not player then return end
+    bwoEnsureStartingCash(player)
 end
 
 -- Sleep end -> schedule server dream event if present

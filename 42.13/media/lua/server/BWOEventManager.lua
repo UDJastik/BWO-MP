@@ -412,6 +412,11 @@ local function newPlayerManager(playerNum, player)
     dprint("[EVENT_MANAGER][INFO] NEW PLAYER JOINED IN", 3)
 
     local gmd = BWOGMD.Get()
+    -- Always ensure starting cash (once per character), even if game already started.
+    if BWOServer and BWOServer.Commands and BWOServer.Commands.EnsureStartingCash then
+        BWOServer.Commands.EnsureStartingCash(player, {})
+    end
+
     if gmd.general.gameStarted then return end
 
     local teleportCoords = {

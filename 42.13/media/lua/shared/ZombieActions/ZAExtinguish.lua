@@ -53,7 +53,9 @@ ZombieActions.Extinguish.onWorking = function(zombie, task)
 
     local cell = getCell()
     local square = cell:getGridSquare(task.x, task.y, task.z)
-    if not square:haveFire() then
+    -- `getGridSquare` can return nil if the chunk isn't loaded (common on server/MP AI).
+    -- Guard so bandit update doesn't crash.
+    if not square or not square:haveFire() then
         return true
     end
 

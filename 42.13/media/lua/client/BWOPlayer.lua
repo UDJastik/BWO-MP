@@ -123,11 +123,11 @@ local function cmdMoneyEarn(player, amount)
     cmd(player, "MoneyEarn", { amount = amount })
 end
 
-local function cmdMoneyPay(player, amount, witnessMin)
+local function cmdMoneyPay(player, amount, witnessMin, itemid)
     if not player then return end
     amount = tonumber(amount) or 0
     if amount <= 0 then return end
-    cmd(player, "MoneyPay", { amount = amount, witnessMin = witnessMin })
+    cmd(player, "MoneyPay", { amount = amount, witnessMin = witnessMin, itemid = itemid })
 end
 
 -- Safe wrapper: prevents nil-call crashes if a dependency mod/script didn't define the function yet.
@@ -449,8 +449,11 @@ local onInventoryTransferAction = function(data)
         local price = addPriceInflation(weight * pm * 10)
         if price == 0 then price = 1 end
 
-        md.BWO.bought = true
-        cmdMoneyPay(character, price, nil)
+        -- SP-like behavior: if you can't pay, it's treated as theft and NPCs may react.
+        -- We mark as "pending" and only set bought=true once the server confirms payment.
+        md.BWO.payPending = true
+        md.BWO.payPendingAmount = price
+        cmdMoneyPay(character, price, 18, item.getID and item:getID() or nil)
 
     elseif not canTake then
         md.BWO.stolen = true
@@ -627,9 +630,16 @@ Events.OnExitVehicle.Add(onExitVehicle)
 
 -- Debug: one-shot client->server connectivity check (confirms server is actually running this mod).
 Events.OnGameStart.Add(function()
-    if BWOPlayer._pingTestSent then return end
     local p = getPlayer()
     if not p then return end
-    BWOPlayer._pingTestSent = true
-    sendClientCommand(p, "Commands", "PingTest", { t = (getTimestampMs and getTimestampMs()) or 0 })
+
+    if not BWOPlayer._ensureStartingCashSent then
+        BWOPlayer._ensureStartingCashSent = true
+        sendClientCommand(p, "Commands", "EnsureStartingCash", {})
+    end
+
+    if not BWOPlayer._pingTestSent then
+        BWOPlayer._pingTestSent = true
+        sendClientCommand(p, "Commands", "PingTest", { t = (getTimestampMs and getTimestampMs()) or 0 })
+    end
 end)

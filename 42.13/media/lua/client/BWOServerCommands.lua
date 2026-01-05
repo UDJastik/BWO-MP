@@ -135,6 +135,63 @@ BWOServerCommands.ForceRemoveResult = function(args)
     end
 end
 
+-- Server-side purchase result for container "buying" (SP-like behavior).
+BWOServerCommands.MoneyPayResult = function(args)
+    if type(args) ~= "table" then return end
+    local p = getPlayer()
+    if not p then return end
+
+    -- Only handle for local player.
+    if args.pid ~= nil and p.getOnlineID and (args.pid ~= p:getOnlineID()) then
+        return
+    end
+
+    local ok = args.ok and true or false
+    local amount = tonumber(args.amount) or 0
+    local itemid = args.itemid ~= nil and tonumber(args.itemid) or nil
+
+    -- Mirror SP chat feedback.
+    if p.addLineChatElement then
+        if ok then
+            p:addLineChatElement("Paid: -$" .. tostring(amount) .. ".00", 0, 1, 0)
+        else
+            p:addLineChatElement("No money, item stolen!", 1, 0, 0)
+        end
+    end
+
+    -- Update purchased item modData if we can find it (prevents double charging).
+    if itemid and p.getInventory then
+        local inv = p:getInventory()
+        if inv then
+            local found = nil
+            local items = ArrayList.new()
+            inv:getAllEvalRecurse(function(it)
+                return it and it.getID and (it:getID() == itemid)
+            end, items)
+
+            if items:size() > 0 then
+                found = items:get(0)
+            end
+
+            if found and found.getModData then
+                local md = found:getModData()
+                md.BWO = md.BWO or {}
+                md.BWO.payPending = nil
+                md.BWO.payPendingAmount = nil
+                if ok then
+                    md.BWO.bought = true
+                else
+                    md.BWO.bought = false
+                    md.BWO.stolen = true
+                end
+                if found.transmitModData then
+                    found:transmitModData()
+                end
+            end
+        end
+    end
+end
+
 -- Server uses this to tweak freshly spawned service vehicles (lightbar/siren/alarm/headlights).
 -- Without a client handler, commands are ignored and emergency vehicles appear "silent".
 BWOServerCommands.UpdateVehicle = function(args)

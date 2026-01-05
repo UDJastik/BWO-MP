@@ -346,6 +346,160 @@ BWOServerEvents.ChopperAlert = function(params)
     end
 end
 
+-- params: x, y, vtype, (optional) z
+-- Spawns a wreck vehicle and an explosion near a group-selected player (ported from SP `BWOEvents.VehicleCrash`).
+BWOServerEvents.VehicleCrash = function(params)
+    dprint("[SERVER_EVENT][INFO][VehicleCrash] INIT", 3)
+
+    -- check
+    if type(params) ~= "table" then return end
+    if params.x == nil or params.y == nil or not params.vtype then return end
+
+    -- sanitize
+    local offx = tonumber(params.x) or 0
+    local offy = tonumber(params.y) or 0
+    local vtype = tostring(params.vtype)
+    local z = tonumber(params.z or 0) or 0
+
+    local groups = BWOUtils.GetPlayerGroups()
+    for gi = 1, #groups do
+        local players = groups[gi]
+        local playerSelected = players and BanditUtils.Choice(players) or nil
+        if playerSelected then
+            local cx = math.floor((playerSelected:getX() + offx) + 0.5)
+            local cy = math.floor((playerSelected:getY() + offy) + 0.5)
+
+            -- clear some space (best-effort)
+            if BanditBaseGroupPlacements and BanditBaseGroupPlacements.ClearSpace then
+                pcall(function()
+                    BanditBaseGroupPlacements.ClearSpace(cx - 4, cy - 4, z, 8, 8)
+                end)
+            end
+
+            -- explosion (server-side world effect)
+            if BWOUtils and BWOUtils.Explode then
+                BWOUtils.Explode(cx, cy, 0)
+            end
+
+            local cell = getCell()
+            local square = cell and cell:getGridSquare(cx, cy, z) or nil
+            if not square then
+                dprint("[SERVER_EVENT][WARN][VehicleCrash] SQUARE UNAVAILABLE @(" .. tostring(cx) .. "," .. tostring(cy) .. "," .. tostring(z) .. ")", 2)
+                return
+            end
+
+            -- vehicle spawn (MP-safe via addVehicleDebug)
+            local vehicle = nil
+            if BWOCompatibility and BWOCompatibility.AddVehicle then
+                vehicle = BWOCompatibility.AddVehicle(vtype, IsoDirections.S, square)
+            elseif type(addVehicleDebug) == "function" then
+                vehicle = addVehicleDebug(vtype, IsoDirections.S, nil, square)
+            end
+
+            if vehicle then
+                -- make it look smashed
+                if vehicle.setGeneralPartCondition then
+                    vehicle:setGeneralPartCondition(0.1, 100)
+                end
+                if vehicle.setBloodIntensity then
+                    vehicle:setBloodIntensity("Front", 1)
+                    vehicle:setBloodIntensity("Rear", 1)
+                    vehicle:setBloodIntensity("Left", 1)
+                    vehicle:setBloodIntensity("Right", 1)
+                end
+            else
+                dprint("[SERVER_EVENT][WARN][VehicleCrash] VEHICLE SPAWN FAILED type=" .. tostring(vtype), 2)
+            end
+        end
+    end
+end
+
+-- params: none
+-- Ported from SP `BWOEvents.ChopperFliers` (client heli + flyer drops).
+BWOServerEvents.ChopperFliers = function(params)
+    dprint("[SERVER_EVENT][INFO][ChopperFliers] INIT", 3)
+
+    if not (SandboxVars and SandboxVars.BanditsWeekOne and SandboxVars.BanditsWeekOne.EventFinalSolution) then
+        return
+    end
+
+    local groups = BWOUtils.GetPlayerGroups()
+    for gi = 1, #groups do
+        local players = groups[gi]
+        local playerSelected = players and BanditUtils.Choice(players) or nil
+        if playerSelected then
+            local px = math.floor(playerSelected:getX() + 0.5)
+            local py = math.floor(playerSelected:getY() + 0.5)
+
+            -- client heli flyby (visual/sound)
+            for j = 1, #players do
+                local player = players[j]
+                local paramsClient = {
+                    pid = player:getOnlineID(),
+                    cx = px,
+                    cy = py,
+                    speed = 1,
+                    name = "heli2",
+                    dir = 90,
+                    sound = "BWOChopperCDC2",
+                    width = 1243,
+                    height = 760,
+                    rotors = true,
+                    lights = true,
+                }
+                sendServerCommand("Events", "FlyingObject", paramsClient)
+            end
+
+            -- schedule flyer drops near the flyby location (server-side)
+            local sp = {x = px, y = py, count = 160}
+            if BWOScheduler and BWOScheduler.Add then
+                BWOScheduler.Add("ChopperFliersStage2", sp, 9000)
+                BWOScheduler.Add("ChopperFliersStage2", sp, 11000)
+                BWOScheduler.Add("ChopperFliersStage2", sp, 12600)
+            end
+        end
+    end
+end
+
+-- params: x, y, count
+BWOServerEvents.ChopperFliersStage2 = function(params)
+    dprint("[SERVER_EVENT][INFO][ChopperFliersStage2] INIT", 3)
+
+    if not (SandboxVars and SandboxVars.BanditsWeekOne and SandboxVars.BanditsWeekOne.EventFinalSolution) then
+        return
+    end
+    if type(params) ~= "table" then return end
+    if params.x == nil or params.y == nil then return end
+
+    local cx = math.floor((tonumber(params.x) or 0) + 0.5)
+    local cy = math.floor((tonumber(params.y) or 0) + 0.5)
+    local want = tonumber(params.count) or 160
+    if want < 1 then return end
+    if want > 500 then want = 500 end -- safety cap
+
+    local cell = getCell()
+    if not cell then return end
+
+    local placed = 0
+    local attempts = want * 8
+    for _ = 1, attempts do
+        local bx = cx + (ZombRand(161) - 80)
+        local by = cy + (ZombRand(161) - 80)
+        for z = 8, 0, -1 do
+            local square = cell:getGridSquare(bx, by, z)
+            if square and square:isOutside() then
+                local item = (BWOCompatibility and BWOCompatibility.GetFlier and BWOCompatibility.GetFlier()) or nil
+                if item then
+                    square:AddWorldInventoryItem(item, ZombRandFloat(0.2, 0.8), ZombRandFloat(0.2, 0.8), 0)
+                    placed = placed + 1
+                end
+                break
+            end
+        end
+        if placed >= want then break end
+    end
+end
+
 -- params: speed, name, sound, weapon
 BWOServerEvents.JetfighterSequence = function(params)
     dprint("[SERVER_EVENT][INFO][JetfighterSequence] INIT", 3)
@@ -1542,6 +1696,72 @@ BWOServerEvents.BuildingHome = function(params)
     end
 end
 
+-- params: intensity
+-- Spawns suicide bombers ("Shahid" program) near players.
+-- NOTE: SP WeekOne schedules "Shahids" but doesn't implement it in BWOEvents; MP needs it for SWeek.lua.
+BWOServerEvents.Shahids = function(params)
+    dprint("[SERVER_EVENT][INFO][Shahids] INIT", 3)
+
+    if type(params) ~= "table" then params = {} end
+    local intensity = tonumber(params.intensity) or 1
+    if intensity < 1 then return end
+    if intensity > 8 then intensity = 8 end
+
+    local cid = (Bandit and Bandit.clanMap and (Bandit.clanMap.SuicideBomber or Bandit.clanMap.SuicideBomber1)) or nil
+    if not cid then
+        dprint("[SERVER_EVENT][WARN][Shahids] clanMap.SuicideBomber missing", 2)
+        return
+    end
+
+    local groups = BWOUtils.GetPlayerGroups()
+    for gi = 1, #groups do
+        local players = groups[gi]
+        local playerSelected = players and BanditUtils.Choice(players) or nil
+        if playerSelected then
+            local px, py, pz = playerSelected:getX(), playerSelected:getY(), playerSelected:getZ()
+
+            local dist = 45 + ZombRand(20)
+            local spawns = BWOUtils.GenerateSpawnPoints(px, py, pz, dist, 1)
+            if #spawns == 1 then
+                local spawn = spawns[1]
+
+                local density = BWOUtils.GetDensityScore(px, py)
+                local size = math.floor((2 * intensity) * #players * (density > 0.2 and density or 0.2))
+                if size < 1 then size = 1 end
+                if size > 24 then size = 24 end
+
+                local args = {
+                    cid = cid,
+                    program = "Shahid",
+                    hostile = true,
+                    x = spawn.x,
+                    y = spawn.y,
+                    z = spawn.z,
+                    size = size
+                }
+                BanditServer.Spawner.Clan(playerSelected, args)
+
+                -- optional marker for clients
+                for j = 1, #players do
+                    local player = players[j]
+                    sendServerCommand("Events", "SpawnGroup", {
+                        pid = player:getOnlineID(),
+                        desc = "Shahids",
+                        cid = cid,
+                        name = "Shahids",
+                        hostile = true,
+                        cx = spawn.x,
+                        cy = spawn.y,
+                        cz = spawn.z
+                    })
+                end
+            else
+                dprint("[SERVER_EVENT][WARN][Shahids] NO SUITABLE SPAWN POINT FOUND", 2)
+            end
+        end
+    end
+end
+
 -- params: on (boolean)
 BWOServerEvents.SetHydroPower = function(params)
     dprint("[SERVER_EVENT][INFO][SetHydroPower] INIT", 3)
@@ -1723,6 +1943,290 @@ BWOServerEvents.MetaSound = function(params)
                 sendServerCommand("Events", "WorldSound", paramsClient)
             end
         end
+    end
+end
+
+-- params: cnt, x, y
+-- Spawns a zombie horde at an offset from a (group-selected) player and makes it aggro the player.
+-- Ported from SP `BWOEvents.Horde` (shared) to MP server event.
+BWOServerEvents.Horde = function(params)
+    dprint("[SERVER_EVENT][INFO][Horde] INIT", 3)
+
+    -- check
+    if type(params) ~= "table" then return end
+    if params.cnt == nil then return end
+    if params.x == nil then return end
+    if params.y == nil then return end
+
+    -- sanitize
+    local cnt = tonumber(params.cnt) or 0
+    local offx = tonumber(params.x) or 0
+    local offy = tonumber(params.y) or 0
+    if cnt <= 0 then return end
+
+    local groups = BWOUtils.GetPlayerGroups()
+    for gi = 1, #groups do
+        local players = groups[gi]
+        local playerSelected = players and BanditUtils.Choice(players) or nil
+        if playerSelected then
+            local cx = playerSelected:getX()
+            local cy = playerSelected:getY()
+            local cz = playerSelected:getZ()
+
+            local density = (BWOUtils.GetDensityScore and BWOUtils.GetDensityScore(cx, cy)) or 0
+
+            local zones = getZones(cx, cy, cz)
+            local cityName = nil
+            local zoneName = nil
+            if zones then
+                for i = 0, zones:size() - 1 do
+                    local zone = zones:get(i)
+                    if zone then
+                        if zone:getType() == "Region" then
+                            cityName = zone:getName()
+                        else
+                            zoneName = zone:getType()
+                        end
+                    end
+                end
+            end
+
+            local outfits = {"Generic01", "Generic02", "Generic03", "Generic04", "Generic05", "Generic05", "Classy", "IT", "Student", "Teacher", "Police", "Young", "Bandit", "Tourist"}
+            local femaleChance = 51
+
+            if cityName and density > 0.3 then
+                if cityName == "WestPoint" then
+                    outfits = {"Student", "Student", "Student", "Student", "Student", "Student", "Student", "Teacher"}
+                    femaleChance = 55
+                elseif cityName == "Rosewood" then
+                    outfits = {"Inmate", "Inmate", "InmateEscaped"}
+                    femaleChance = 0
+                elseif cityName == "Riverside" then
+                    outfits = {"Tourist"}
+                elseif cityName == "Jefferson" then
+                    outfits = {"ArmyCamoGreen"}
+                    femaleChance = 10
+                end
+            elseif zoneName then
+                local zn = tostring(zoneName)
+                local isForest = false
+                local isFarm = false
+                -- Some versions expose `embodies` on Java String; otherwise fallback to substring match.
+                if zoneName and zoneName.embodies then
+                    local okF, resF = pcall(function() return zoneName:embodies("Forest") end)
+                    local okR, resR = pcall(function() return zoneName:embodies("Farm") end)
+                    isForest = okF and resF or false
+                    isFarm = okR and resR or false
+                else
+                    isForest = (zn:find("Forest", 1, true) ~= nil)
+                    isFarm = (zn:find("Farm", 1, true) ~= nil)
+                end
+
+                if isForest then
+                    outfits = {"Survivalist"}
+                    femaleChance = 33
+                elseif isFarm then
+                    outfits = {"Farmer"}
+                end
+            end
+
+            -- Server-side sound attracting nearby zombies (not an audible SFX).
+            if addSound then
+                addSound(playerSelected, math.floor(cx), math.floor(cy), math.floor(cz), 100, 100)
+            end
+
+            local sx = math.floor(cx + offx + 0.5)
+            local sy = math.floor(cy + offy + 0.5)
+
+            for j = 1, cnt do
+                local outfit = BanditUtils.Choice(outfits)
+                local zombieList = BanditCompatibility.AddZombiesInOutfit(
+                    sx, sy, 0,
+                    outfit, femaleChance,
+                    false, false, false, false, false, false,
+                    1
+                )
+                if zombieList then
+                    for i = 0, zombieList:size() - 1 do
+                        local zombie = zombieList:get(i)
+                        if zombie then
+                            zombie:spotted(playerSelected, true)
+                            zombie:setTarget(playerSelected)
+                            zombie:setAttackedBy(playerSelected)
+                            zombie:pathToLocationF(cx, cy, cz)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- params: none
+-- Ported (server-side) from SP `BWOEvents.FinalSolution`.
+-- Triggers nukes (if any are armed in BWOGMD.Nukes) and starts a storm.
+BWOServerEvents.FinalSolution = function(params)
+    dprint("[SERVER_EVENT][INFO][FinalSolution] INIT", 3)
+
+    if not (SandboxVars and SandboxVars.BanditsWeekOne and SandboxVars.BanditsWeekOne.EventFinalSolution) then
+        return
+    end
+
+    local gmd = BWOGMD and BWOGMD.Get and BWOGMD.Get() or nil
+    local nukes = gmd and gmd.Nukes or nil
+    if type(nukes) ~= "table" then return end
+
+    local ncnt = 0
+    for _ in pairs(nukes) do ncnt = ncnt + 1 end
+    if ncnt <= 0 then return end
+
+    local groups = BWOUtils.GetPlayerGroups()
+    for gi = 1, #groups do
+        local players = groups[gi]
+        local playerSelected = players and BanditUtils.Choice(players) or nil
+        if playerSelected then
+            local px = playerSelected:getX()
+            local py = playerSelected:getY()
+
+            local paramsNear = {x = px, y = py, r = 80}
+
+            local ct = 100
+            for _, nuke in pairs(nukes) do
+                if type(nuke) == "table" and nuke.x and nuke.y and nuke.r then
+                    if isInCircle(px, py, nuke.x, nuke.y, nuke.r) then
+                        BWOScheduler.Add("Nuke", paramsNear, 50000)
+                    else
+                        BWOScheduler.Add("NukeDist", nuke, ct)
+                        ct = ct + 4000 + ZombRand(10000)
+                    end
+                end
+            end
+
+            BWOScheduler.Add("WeatherStorm", {len = 1440}, 1000)
+        end
+    end
+end
+
+-- params: x, y, r
+BWOServerEvents.Nuke = function(params)
+    dprint("[SERVER_EVENT][INFO][Nuke] INIT", 3)
+
+    if not (SandboxVars and SandboxVars.BanditsWeekOne and SandboxVars.BanditsWeekOne.EventFinalSolution) then
+        return
+    end
+    if type(params) ~= "table" then return end
+    if params.x == nil or params.y == nil or params.r == nil then return end
+
+    local px = math.floor((tonumber(params.x) or 0) + 0.5)
+    local py = math.floor((tonumber(params.y) or 0) + 0.5)
+    local r = tonumber(params.r) or 0
+    if r <= 0 then return end
+    if r > 140 then r = 140 end -- cap for safety
+
+    -- audible boom for everyone nearby (per-player)
+    local players = getAllPlayersSafe()
+    for i = 1, #players do
+        local pl = players[i]
+        if pl then
+            sendServerCommand("Events", "PlayerSound", {pid = pl:getOnlineID(), sound = "DOKaboom", volume = 1})
+        end
+    end
+
+    local cell = getCell()
+    if not cell then return end
+
+    local r2 = r * r
+    local step = 2 -- performance: burn every 2 tiles
+
+    for z = 0, 7 do
+        for dy = -r, r, step do
+            local by = py + dy
+            for dx = -r, r, step do
+                local bx = px + dx
+                local d2 = (dx * dx) + (dy * dy)
+                if d2 <= r2 then
+                    local square = cell:getGridSquare(bx, by, z)
+                    if square then
+                        if BWOSquareLoader and BWOSquareLoader.Burn then
+                            BWOSquareLoader.Burn(square)
+                        end
+                        local vehicle = square:getVehicleContainer()
+                        if vehicle and BWOVehicles and BWOVehicles.Burn then
+                            BWOVehicles.Burn(vehicle)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- ignite nearby zombies (loaded)
+    local zlist = cell:getZombieList()
+    if zlist then
+        for i = 0, zlist:size() - 1 do
+            local z = zlist:get(i)
+            if z then
+                local dx = z:getX() - px
+                local dy = z:getY() - py
+                if (dx * dx + dy * dy) <= r2 then
+                    if z:getZ() >= 0 then
+                        z:SetOnFire()
+                    end
+                end
+            end
+        end
+    end
+
+    -- ignite nearby players
+    for i = 1, #players do
+        local pl = players[i]
+        if pl then
+            local dx = pl:getX() - px
+            local dy = pl:getY() - py
+            if (dx * dx + dy * dy) <= r2 then
+                if pl:getZ() >= 0 then
+                    pl:SetOnFire()
+                end
+            end
+        end
+    end
+end
+
+-- params: x, y, r
+BWOServerEvents.NukeDist = function(params)
+    dprint("[SERVER_EVENT][INFO][NukeDist] INIT", 3)
+
+    if not (SandboxVars and SandboxVars.BanditsWeekOne and SandboxVars.BanditsWeekOne.EventFinalSolution) then
+        return
+    end
+    if type(params) ~= "table" then return end
+
+    local players = getAllPlayersSafe()
+    for i = 1, #players do
+        local pl = players[i]
+        if pl then
+            sendServerCommand("Events", "PlayerSound", {pid = pl:getOnlineID(), sound = "BWOKaboomDist", volume = 1})
+        end
+    end
+end
+
+-- params: len (minutes)
+BWOServerEvents.WeatherStorm = function(params)
+    dprint("[SERVER_EVENT][INFO][WeatherStorm] INIT", 3)
+    if type(params) ~= "table" then return end
+    if params.len == nil then return end
+
+    local len = tonumber(params.len) or 0
+    if len <= 0 then return end
+
+    local cm = getClimateManager and getClimateManager() or nil
+    if not cm then return end
+
+    if WeatherPeriod and WeatherPeriod.STAGE_STORM and cm.triggerCustomWeatherStage then
+        cm:triggerCustomWeatherStage(WeatherPeriod.STAGE_STORM, len)
+    elseif cm.transmitTriggerStorm then
+        -- fallback path used by clients in SP
+        cm:transmitTriggerStorm(len)
     end
 end
 
