@@ -124,6 +124,21 @@ ZombiePrograms.Active.Escape = function(bandit)
     local closestPlayer = BanditUtils.GetClosestPlayerLocation(bandit, config)
 
     if closestPlayer.x and closestPlayer.y and closestPlayer.z then
+        local banditSquare = bandit:getSquare()
+        local bx = banditSquare:getX()
+        local by = banditSquare:getY()
+
+        local dx = closestPlayer.x - bx
+        local dy = closestPlayer.y - by
+        local dist = math.sqrt(dx*dx + dy*dy)
+        if dist > 0 then
+            dx = dx / dist
+            dy = dy / dist
+        end
+
+        local escapeDist = 100 + ZombRand(101)  -- 100-200
+        local targetX = bx - dx * escapeDist  -- ОТ бандита, ПРОТИВ игрока
+        local targetY = by - dy * escapeDist
 
         -- calculate random escape direction
         local deltaX = 100 + ZombRand(100)
@@ -134,7 +149,7 @@ ZombiePrograms.Active.Escape = function(bandit)
         if rx == 1 then deltaX = -deltaX end
         if ry == 1 then deltaY = -deltaY end
 
-        table.insert(tasks, BanditUtils.GetMoveTask(endurance, closestPlayer.x+deltaX, closestPlayer.y+deltaY, 0, walkType, 12, false))
+        table.insert(tasks, BanditUtils.GetMoveTask(endurance, targetX, targetY, 0, walkType, 12, false))
     end
     return {status=true, next="Escape", tasks=tasks}
 end

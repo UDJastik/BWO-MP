@@ -37,3 +37,5 @@ BWOBanditsPatch_NoCorpseUndress.Apply()
 Events.OnGameStart.Add(BWOBanditsPatch_NoCorpseUndress.Apply)
 
 
+
+
