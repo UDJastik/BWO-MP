@@ -311,22 +311,13 @@ BWOServer.Commands.ActivateTargets = function(player, args)
                                     if severity >= 2 and isUnarmedActor(actor, witness.brain) then
                                         -- Update both the live actor and the cluster brain (cluster is authoritative on dedi).
                                         Bandit.SetProgram(actor, "Active", {})
-
-                                        local didHide = false
-                                        -- If already indoors, prefer hiding in-place / moving to a room.
-                                        if BanditPrograms and BanditPrograms.Hide and Bandit.AddTask and actor:getSquare() and actor:getSquare():getRoom() and (ZombRand(2) == 0) then
-                                            local hideTasks = BanditPrograms.Hide(actor)
-                                            if type(hideTasks) == "table" and #hideTasks > 0 then
-                                                for _, t in ipairs(hideTasks) do
-                                                    Bandit.AddTask(actor, t)
-                                                end
-                                                didHide = true
-                                            end
-                                        end
-
-                                        if (not didHide) and Bandit.SetProgramStage then
-                                            -- Force "Escape" stage so the program doesn't reselect a combat target and walk toward the player.
+                                        print("Witness ID: " .. witness.id .. " changed to Active")
+                                        print("Witness program: " .. witness.brain.program.name)
+                                        if ZombRand(2) == 0 then
+                                        -- Force "Escape" stage so the program doesn't reselect a combat target and walk toward the player.
                                             Bandit.SetProgramStage(actor, "Escape")
+                                        else
+                                            Bandit.SetProgramStage(actor, "Surrender")
                                         end
                                         forceProgramStageOnCluster(witness.id, "Active", "Escape")
                                         reacted = reacted + 1

@@ -55,29 +55,46 @@ ZombiePrograms.Patrol.Main = function(bandit)
             end
         end
 
-        -- React to nearby player if already hostile (or very close).
+        -- React to nearby player only if Army is already hostile OR player is a threat (has weapon).
         if BanditUtils and BanditUtils.GetClosestPlayerLocation then
             local config = { mustSee = false, hearDist = 40 }
             local closestPlayer = BanditUtils.GetClosestPlayerLocation(bandit, config)
             if closestPlayer and closestPlayer.dist then
-                local mindist = 6
-                if (brain and brain.hostileP) or (Bandit and Bandit.IsHostile and Bandit.IsHostile(bandit)) then
-                    mindist = 50
-                end
-                if closestPlayer.dist < mindist then
-                    Bandit.Say(bandit, "SPOTTED")
-                    Bandit.ClearTasks(bandit)
-                    if unarmed then
-                        Bandit.SetProgram(bandit, "Active", {})
-                        if Bandit.SetProgramStage then
-                            Bandit.SetProgramStage(bandit, "Escape")
-                        end
-                    else
-                        Bandit.SetProgram(bandit, "Bandit", {})
-                        Bandit.SetHostileP(bandit, true)
+                -- Check if player is a threat (has weapon visible)
+                local playerIsThreat = false
+                local player = BanditPlayer and BanditPlayer.GetPlayerById and BanditPlayer.GetPlayerById(closestPlayer.id) or nil
+                if player then
+                    local primaryItem = player:getPrimaryHandItem()
+                    local secondaryItem = player:getSecondaryHandItem()
+                    if (primaryItem and primaryItem.IsWeapon and primaryItem:IsWeapon()) or
+                       (secondaryItem and secondaryItem.IsWeapon and secondaryItem:IsWeapon()) then
+                        playerIsThreat = true
                     end
-                    Bandit.ForceStationary(bandit, false)
-                    return {status=true, next="Prepare", tasks=tasks}
+                end
+                
+                local isAlreadyHostile = (brain and brain.hostileP) or (Bandit and Bandit.IsHostile and Bandit.IsHostile(bandit))
+                
+                -- Only react if Army is already hostile OR player is a threat
+                if isAlreadyHostile or playerIsThreat then
+                    local mindist = 6
+                    if isAlreadyHostile then
+                        mindist = 50
+                    end
+                    if closestPlayer.dist < mindist then
+                        Bandit.Say(bandit, "SPOTTED")
+                        Bandit.ClearTasks(bandit)
+                        if unarmed then
+                            Bandit.SetProgram(bandit, "Active", {})
+                            if Bandit.SetProgramStage then
+                                Bandit.SetProgramStage(bandit, "Escape")
+                            end
+                        else
+                            Bandit.SetProgram(bandit, "Bandit", {})
+                            Bandit.SetHostileP(bandit, true)
+                        end
+                        Bandit.ForceStationary(bandit, false)
+                        return {status=true, next="Prepare", tasks=tasks}
+                    end
                 end
             end
         end

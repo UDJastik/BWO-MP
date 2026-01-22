@@ -131,14 +131,10 @@ ZombiePrograms.Active.Escape = function(bandit)
         local dx = closestPlayer.x - bx
         local dy = closestPlayer.y - by
         local dist = math.sqrt(dx*dx + dy*dy)
-        if dist > 0 then
-            dx = dx / dist
-            dy = dy / dist
-        end
 
-        local escapeDist = 100 + ZombRand(101)  -- 100-200
-        local targetX = bx - dx * escapeDist  -- ОТ бандита, ПРОТИВ игрока
-        local targetY = by - dy * escapeDist
+        local safeDist = dist + config.hearDist + 20 + ZombRand(50)  -- 100-200
+        local targetX = bx - dx * safeDist
+        local targetY = by - dy * safeDist
 
         -- calculate random escape direction
         local deltaX = 100 + ZombRand(100)
@@ -152,6 +148,20 @@ ZombiePrograms.Active.Escape = function(bandit)
         table.insert(tasks, BanditUtils.GetMoveTask(endurance, targetX, targetY, 0, walkType, 12, false))
     end
     return {status=true, next="Escape", tasks=tasks}
+end
+
+ZombiePrograms.Active.Surrender = function(bandit)
+    local tasks = {}
+
+    if ZombRand(2) == 0 then
+        local task = {action="Time", anim="Surrender", time=40}
+        table.insert(tasks, task)
+    else
+        local task = {action="Time", anim="Scramble", time=40}
+        table.insert(tasks, task)
+    end
+
+    return {status=true, next="Surrender", tasks=tasks}
 end
 
 ZombiePrograms.Active.Wait = function(bandit)

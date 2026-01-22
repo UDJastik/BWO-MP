@@ -107,10 +107,6 @@ end
 -- SP BWOPlayer.lua hooks ported to MP (client detectors)
 -- =========================================================
 
-local function isLocalPlayer(p)
-    return p and instanceof(p, "IsoPlayer") and (p == getPlayer())
-end
-
 local function cmd(player, command, args)
     if not player then return end
     sendClientCommand(player, "Commands", command, args or {})
@@ -146,6 +142,8 @@ local onHitZombie = function(zombie, attacker, bodyPartType, handWeapon)
     -- Gunshot reaction (MP): ensure nearby NPCs react when a ranged hit actually occurs.
     if handWeapon and handWeapon.isRanged and handWeapon:isRanged() then
         BWOPlayer.ActivateTargets(attacker, 40, 3)
+    else
+        BWOPlayer.ActivateTargets(attacker, 20, 2)
     end
 
     local brain = BanditBrain and BanditBrain.Get and BanditBrain.Get(zombie) or nil
@@ -635,7 +633,19 @@ Events.OnGameStart.Add(function()
 
     if not BWOPlayer._ensureStartingCashSent then
         BWOPlayer._ensureStartingCashSent = true
-        sendClientCommand(p, "Commands", "EnsureStartingCash", {})
+        -- Use a delay to ensure player modData is accessible
+        local tickCount = 0
+        local function ensureCashTick()
+            tickCount = tickCount + 1
+            if tickCount < 10 then return end -- Wait 10 ticks before sending
+
+            local player = getPlayer()
+            if player and player.getModData then
+                sendClientCommand(player, "Commands", "EnsureStartingCash", {})
+            end
+            Events.OnTick.Remove(ensureCashTick)
+        end
+        Events.OnTick.Add(ensureCashTick)
     end
 
     if not BWOPlayer._pingTestSent then

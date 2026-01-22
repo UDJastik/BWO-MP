@@ -220,3 +220,83 @@ ZombiePrograms.Walker.Main = function(bandit)
 
     return {status=true, next="Main", tasks=tasks}
 end
+ZombiePrograms.Walker.Escape = function(bandit)
+    local tasks = {}
+    local id = BanditUtils.GetCharacterID(bandit)
+    local endurance = 0
+    local walkType = "Run"
+
+    local health = bandit:getHealth()
+    if health < 0.8 then
+        walkType = "Limp"
+        endurance = 0
+    end
+
+    -- symptoms
+    if math.abs(id) % 4 > 0 then
+        if BWOScheduler.SymptomLevel == 3 then
+            walkType = "Limp"
+        elseif BWOScheduler.SymptomLevel >= 4 then
+            walkType = "Scramble"
+        end
+
+        local subTasks = BanditPrograms.Symptoms(bandit)
+        if #subTasks > 0 then
+            for _, subTask in pairs(subTasks) do
+                table.insert(tasks, subTask)
+            end
+            return {status=true, next="Main", tasks=tasks}
+        end
+    end
+
+    local config = {}
+    config.mustSee = false
+    config.hearDist = 40
+
+    local closestPlayer = BanditUtils.GetClosestPlayerLocation(bandit, config)
+
+    if closestPlayer.x and closestPlayer.y and closestPlayer.z then
+        local banditSquare = bandit:getSquare()
+        local bx = banditSquare:getX()
+        local by = banditSquare:getY()
+
+        local dx = closestPlayer.x - bx
+        local dy = closestPlayer.y - by
+        local dist = math.sqrt(dx*dx + dy*dy)
+        if dist > 0 then
+            dx = dx / dist
+            dy = dy / dist
+        end
+
+        local escapeDist = 100 + ZombRand(101)  -- 100-200
+        local targetX = bx - dx * escapeDist  -- ОТ бандита, ПРОТИВ игрока
+        local targetY = by - dy * escapeDist
+
+        -- calculate random escape direction
+        local deltaX = 100 + ZombRand(100)
+        local deltaY = 100 + ZombRand(100)
+
+        local rx = ZombRand(2)
+        local ry = ZombRand(2)
+        if rx == 1 then deltaX = -deltaX end
+        if ry == 1 then deltaY = -deltaY end
+
+        table.insert(tasks, BanditUtils.GetMoveTask(endurance, targetX, targetY, 0, walkType, 12, false))
+    end
+    return {status=true, next="Escape", tasks=tasks}
+end
+
+ZombiePrograms.Walker.Surrender = function(bandit)
+    local tasks = {}
+
+    if ZombRand(2) == 0 then
+        local task = {action="Time", anim="Surrender", time=40}
+        table.insert(tasks, task)
+    else
+        local task = {action="Time", anim="Scramble", time=40}
+        table.insert(tasks, task)
+    end
+
+    return {status=true, next="Surrender", tasks=tasks}
+end
+

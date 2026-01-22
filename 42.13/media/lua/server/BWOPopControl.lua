@@ -43,7 +43,7 @@ local function refreshScenarioFromGMD()
         BWOPopControl.zombiePercent = 66
     end
 
-    dprint("[POP CONTROL][INFO] SCENARIO SWITCHED TO: " .. tostring(scen), 2)
+    -- dprint("[POP CONTROL][INFO] SCENARIO SWITCHED TO: " .. tostring(scen), 2)
 end
 
 -- population defaults (server-side mirror of client values)
@@ -84,6 +84,16 @@ BWOPopControl.Stats = BWOPopControl.Stats or {
     inhabitant = { spawnedTotal = 0, despawnedTotal = 0, spawnedInterval = 0, despawnedInterval = 0, last = {} },
     survivor = { spawnedTotal = 0, despawnedTotal = 0, spawnedInterval = 0, despawnedInterval = 0, last = {} },
 }
+
+local SPAWN_CAP = 200
+
+local function clampSpawnCount(cnt)
+    cnt = tonumber(cnt) or 0
+    if cnt < 0 then return 0 end
+    cnt = math.floor(cnt)
+    if cnt > SPAWN_CAP then return SPAWN_CAP end
+    return cnt
+end
 
 local function fmtNum(n, digits)
     if n == nil then return "nil" end
@@ -128,6 +138,7 @@ local function logStatsEvery10Ticks(numTicks)
         local s = BWOPopControl.Stats[key]
         if not s then return end
         local last = s.last or {}
+        --[[
         dprint(string.format(
             "[POP CONTROL][STATS][%s] tick=%s worldAge=%sh hour=%s players=%s scenario=%s | target=%s current=%s missing=%s | spawned(+10t)=%s total=%s | despawned(+10t)=%s total=%s",
             groupName,
@@ -144,6 +155,7 @@ local function logStatsEvery10Ticks(numTicks)
             tostring(s.despawnedInterval or 0),
             tostring(s.despawnedTotal or 0)
         ), 2)
+        --]]
 
         -- reset interval counters
         s.spawnedInterval = 0
@@ -197,9 +209,9 @@ local function zombieController(targetCnt)
                 local z = zombieList:get(i)
                 if z then table.insert(zombies, z) end
             end
-            if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-                dprint("[ZOMBIEDEL] Zombielist size: " .. zombieListSize, 4)
-            end
+            -- if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+            --     dprint("[ZOMBIEDEL] Zombielist size: " .. zombieListSize, 4)
+            -- end
             local desired = targetCnt or 0
             if desired < 0 then desired = 0 end
 
@@ -248,15 +260,15 @@ local function zombieController(targetCnt)
             local current = #candidates
             local toRemove = current - desired
             if toRemove <= 0 then
-                if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-                    dprint(string.format("[ZOMBIEDEL] current %s <= target %s, nothing to delete for player %s", current, desired, player.getUsername and player:getUsername() or tostring(pIdx)), 4)
-                end
+                -- if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                --     dprint(string.format("[ZOMBIEDEL] current %s <= target %s, nothing to delete for player %s", current, desired, player.getUsername and player:getUsername() or tostring(pIdx)), 4)
+                -- end
             else
                 -- safety cap to avoid deleting too many per tick
                 if toRemove > 400 then toRemove = 400 end
-                if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-                    dprint(string.format("[ZOMBIEDEL] need to delete %s (target %s, current %s)", toRemove, desired, current), 4)
-                end
+                -- if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                --     dprint(string.format("[ZOMBIEDEL] need to delete %s (target %s, current %s)", toRemove, desired, current), 4)
+                -- end
 
                 -- Delete farthest first, keep nearest (stable).
                 for i = #candidates, 1, -1 do
@@ -274,9 +286,9 @@ local function zombieController(targetCnt)
                         else
                             zombie:removeFromWorld()
                             zombie:removeFromSquare()
-                            if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-                                dprint("[ZOMBIDEL] Zombie removed on server - " .. tostring(id), 4)
-                            end
+                            -- if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+                            --     dprint("[ZOMBIDEL] Zombie removed on server - " .. tostring(id), 4)
+                            -- end
                         -- Notify ALL clients to remove by coordinates (robust in MP; id mapping can differ).
                         local playersAll = BWOUtils.GetAllPlayers()
                         local payload = { zid = id, x = zombie:getX(), y = zombie:getY(), z = zombie:getZ() }
@@ -290,9 +302,9 @@ local function zombieController(targetCnt)
                 end
             end
 
-            if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-                dprint("[POP CONTROL] Zombie Controller: Target Count: " .. targetCnt .. " Removed count: " .. removed .. " player: " .. (player.getUsername and player:getUsername() or tostring(pIdx)), 4)
-            end
+            -- if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+            --     dprint("[POP CONTROL] Zombie Controller: Target Count: " .. targetCnt .. " Removed count: " .. removed .. " player: " .. (player.getUsername and player:getUsername() or tostring(pIdx)), 4)
+            -- end
         end
     end
 end
@@ -416,6 +428,7 @@ local function streetsController(targetCnt)
     local density = getDensityForPlayer(player)
     local hourmod = getHourScore and getHourScore() or 1
     local target = targetCnt * density * hourmod
+    if target == 0 then target = targetCnt end
 
     local programs = {"Walker", "Runner", "Patrol", "Postal", "Gardener", "Janitor", "Entertainer", "Vandal"}
     local current = (BWOUtils.CountBanditByProgram and BWOUtils.CountBanditByProgram(programs)) or countTable(BWOUtils.GetAllBanditByProgram(programs))
@@ -440,6 +453,7 @@ local function inhabitantsController(targetCnt)
     local density = getDensityForPlayer(player)
 
     local target = targetCnt * density
+    if target == 0 then target = targetCnt end
 
     local current = (BWOUtils.CountBanditByProgram and BWOUtils.CountBanditByProgram({"Inhabitant"})) or countTable(BWOUtils.GetAllBanditByProgram({"Inhabitant"}))
 
@@ -551,7 +565,7 @@ local function getGroupCount(group, worldAge)
         if worldAge >= period.start and worldAge < period.endt then
             local base = tonumber(period.cnt) or 0
             local mult = getSandboxPopMultiplier(group)
-            if mult < 0 then mult = 0 end
+            if mult < 0 then mult = 1 end
             return base * mult
         end
     end
@@ -564,7 +578,8 @@ BWOPopControl.StreetsSpawn = function(cnt)
     if not isServer() then return end
     local players = BWOUtils.GetAllPlayers()
     if #players == 0 then return end
-    cnt = cnt or 1
+    cnt = clampSpawnCount(cnt or 1)
+    if cnt <= 0 then return end
 
     local player = BanditUtils.Choice(players)
     if not player then return end
@@ -703,7 +718,8 @@ BWOPopControl.InhabitantsSpawn = function(max)
     local players = BWOUtils.GetAllPlayers()
     if #players == 0 then return end
 
-    max = max or 0
+    local maxSpawn = clampSpawnCount(max or 0)
+    if maxSpawn <= 0 then return end
     local player = BanditUtils.Choice(players)
     if not player then return end
 
@@ -840,8 +856,9 @@ BWOPopControl.InhabitantsSpawn = function(max)
         roomPool[i], roomPool[j] = roomPool[j], roomPool[i]
     end
 
-    local i = 0
+    local spawned = 0
     for _, rp in pairs(roomPool) do
+        if spawned >= maxSpawn then break end
         local args = {
             size = 1,
             program = "Inhabitant",
@@ -852,13 +869,12 @@ BWOPopControl.InhabitantsSpawn = function(max)
         }
         BanditServer.Spawner.Clan(player, args)
 
-        i = i + 1
-        if i > max then break end
+        spawned = spawned + 1
     end
 
-    if i > 0 then
-        statsInc("inhabitant", "spawnedTotal", i)
-        statsInc("inhabitant", "spawnedInterval", i)
+    if spawned > 0 then
+        statsInc("inhabitant", "spawnedTotal", spawned)
+        statsInc("inhabitant", "spawnedInterval", spawned)
     end
 end
 
@@ -930,7 +946,8 @@ BWOPopControl.SurvivorsSpawn = function(cnt)
     if not isServer() then return end
     local players = BWOUtils.GetAllPlayers()
     if #players == 0 then return end
-    cnt = cnt or 1
+    cnt = clampSpawnCount(cnt or 1)
+    if cnt <= 0 then return end
 
     local player = BanditUtils.Choice(players)
     if not player then return end
@@ -1105,7 +1122,7 @@ local function everyOneMinute()
         clusters[i] = false
     end
 
-    dprint ("[POP CONTROL][INFO] ZOMBIES: " .. zombieListSize, 3)
+    -- dprint("[POP CONTROL][INFO] ZOMBIES: " .. zombieListSize, 3)
     for i = 0, zombieListSize - 1 do
         local zombie = zombieList:get(i)
         
@@ -1124,13 +1141,13 @@ local function everyOneMinute()
 
                 local outfitName = zombie:getOutfitName()
                 if not outfitName then
-                    dprint ("[POPCONTROL][ERR] MISSING OUTFIT!", 1)
+                    -- dprint("[POPCONTROL][ERR] MISSING OUTFIT!", 1)
                     outfitName = "Generic01"
                 end
                 
                 local outfitData = Bandit.outfit2clan[outfitName]
                 if not outfitData then
-                    dprint ("[POPCONTROL][WARN] MISSING OUTFIT MAPPING: " .. tostring(outfitName), 2)
+                    -- dprint("[POPCONTROL][WARN] MISSING OUTFIT MAPPING: " .. tostring(outfitName), 2)
                     outfitData = {cid = Bandit.clanMap.Walker}
                 end
 
@@ -1139,7 +1156,7 @@ local function everyOneMinute()
                     local bandit = BanditUtils.Choice(loadBanditOptions(outfitData.cid))
                     local brain = {}
 
-                    dprint ("[POPCONTROL][INFO] CONVERTING, OUTFIT: " .. tostring(outfitName) .. ", CID: " .. outfitData.cid, 3)
+                    -- dprint("[POPCONTROL][INFO] CONVERTING, OUTFIT: " .. tostring(outfitName) .. ", CID: " .. outfitData.cid, 3)
 
                     -- auto-generated properties 
                     brain.id = id
@@ -1264,9 +1281,9 @@ local function everyOneMinute()
                     gmd[id] = brain
                     clusters[c] = true
                     
-                    dprint ("[POP CONTROL][INFO] ZOMBIE " .. id .. " BANDITIZED.", 3)
+                    -- dprint("[POP CONTROL][INFO] ZOMBIE " .. id .. " BANDITIZED.", 3)
                 else
-                    dprint ("[POP CONTROL][ERR] WRONG CID MAPPING FOR OUTFIT " .. outfitName, 1)
+                    -- dprint("[POP CONTROL][ERR] WRONG CID MAPPING FOR OUTFIT " .. outfitName, 1)
                 end
             else
                 -- dprint ("[POP CONTROL][INFO] ZOMBIE" .. id .. " IS ALREADY A BANDIT.", 3)
@@ -1278,7 +1295,7 @@ local function everyOneMinute()
 
     for i=0, BanditClusterCount-1 do
         if clusters[i] then
-            dprint ("[POP CONTROL][INFO] TRANSMIT CLUSTER" .. i, 3)
+            -- dprint("[POP CONTROL][INFO] TRANSMIT CLUSTER" .. i, 3)
             TransmitBanditClusterExpicit(i)
         end
     end

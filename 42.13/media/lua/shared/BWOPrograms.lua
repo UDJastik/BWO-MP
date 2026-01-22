@@ -404,17 +404,60 @@ BanditPrograms.Talk = function(bandit)
     local minDist = 3
     local blood
     local health
-    if neighborPlayer.dist < neighborBandit.dist then
-        neighbor = neighborPlayer
-        minDist = 5
-        local player = BanditPlayer.GetPlayerById(neighbor.id)
-        local bodyDamage = player:getBodyDamage()
-        blood = player:getTotalBlood()
-        health = bodyDamage:getOverallBodyHealth()
-
+    local targetIsPlayer = false
+    if neighborPlayer.dist + 1 < neighborBandit.dist then
+        local player = BanditPlayer.GetPlayerById(neighborPlayer.id)
+        if player then
+            local primaryItem = player:getPrimaryHandItem()
+            local secondaryItem = player:getSecondaryHandItem()
+            local hasWeapon = false
+            
+            -- Проверяем основную руку
+            if primaryItem and primaryItem.IsWeapon and primaryItem:IsWeapon() then
+                hasWeapon = true
+            end
+            
+            -- Проверяем вторую руку
+            if secondaryItem and secondaryItem.IsWeapon and secondaryItem:IsWeapon() then
+                hasWeapon = true
+            end
+            
+            -- Если у игрока нет оружия, выбираем его
+            if not hasWeapon then
+                neighbor = neighborPlayer
+                targetIsPlayer = true
+                minDist = 3
+                local bodyDamage = player:getBodyDamage()
+                blood = player:getTotalBlood()
+                health = bodyDamage:getOverallBodyHealth()
+            end
+            -- Если оружие есть, neighbor остается neighborBandit
+        end
     end
 
     if neighbor.dist < minDist then
+        if targetIsPlayer then
+            local md = bandit:getModData()
+            md.BWO = md.BWO or {}
+
+            local now = (BanditUtils and BanditUtils.GetTime and BanditUtils.GetTime())
+                        or (BWOUtils and BWOUtils.GetTime and BWOUtils.GetTime())
+                        or ((getTimestampMs and getTimestampMs()) or 0)
+
+            local nextTalk = tonumber(md.BWO.nextPlayerTalk or 0) or 0
+            local cooldown = 90000 -- ~2 real-time minutes with default day length
+            local chance = 20      -- 20% gate before the usual talk roll
+
+            if now < nextTalk then
+                return tasks
+            end
+
+            md.BWO.nextPlayerTalk = now + cooldown
+            if ZombRand(100) >= chance then
+                return tasks
+            end
+        end
+
         local square = getCell():getGridSquare(neighbor.x, neighbor.y, neighbor.z)
         if square and BanditUtils.LineClear(bandit, square) then
             if ZombRand(2) == 0 then

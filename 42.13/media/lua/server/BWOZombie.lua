@@ -322,31 +322,31 @@ local function flush()
     CacheLightZ = cacheLightZ
 
     -- Debug summary (enable by setting VERBOSE_LVL to 4+ in `shared/BWODebug.lua`)
-    if VERBOSE_LVL and VERBOSE_LVL >= 4 then
-        dprint(string.format(
-            "[BWOZombie][flush] zombies=%s cache=%s light=%s lightZ=%s lightB=%s queue=%s",
-            tostring(zombieListSize),
-            tostring(countTable(Cache)),
-            tostring(countTable(CacheLight)),
-            tostring(countTable(CacheLightZ)),
-            tostring(countTable(CacheLightB)),
-            tostring(countTable(queue))
-        ), 4)
-
-        -- Try to explain low lightB: how many entries exist in clusters right now?
-        if BanditClusters and BanditClusterCount then
-            local clusterTotal = 0
-            for c = 0, BanditClusterCount - 1 do
-                local cluster = BanditClusters[c]
-                if cluster then
-                    for _ in pairs(cluster) do
-                        clusterTotal = clusterTotal + 1
-                    end
-                end
-            end
-            dprint(string.format("[BWOZombie][flush] clusterEntriesTotal=%s", tostring(clusterTotal)), 4)
-        end
-    end
+    -- if VERBOSE_LVL and VERBOSE_LVL >= 4 then
+    --     dprint(string.format(
+    --         "[BWOZombie][flush] zombies=%s cache=%s light=%s lightZ=%s lightB=%s queue=%s",
+    --         tostring(zombieListSize),
+    --         tostring(countTable(Cache)),
+    --         tostring(countTable(CacheLight)),
+    --         tostring(countTable(CacheLightZ)),
+    --         tostring(countTable(CacheLightB)),
+    --         tostring(countTable(queue))
+    --     ), 4)
+    --
+    --     -- Try to explain low lightB: how many entries exist in clusters right now?
+    --     if BanditClusters and BanditClusterCount then
+    --         local clusterTotal = 0
+    --         for c = 0, BanditClusterCount - 1 do
+    --             local cluster = BanditClusters[c]
+    --             if cluster then
+    --                 for _ in pairs(cluster) do
+    --                     clusterTotal = clusterTotal + 1
+    --                 end
+    --             end
+    --         end
+    --         dprint(string.format("[BWOZombie][flush] clusterEntriesTotal=%s", tostring(clusterTotal)), 4)
+    --     end
+    -- end
 end
 
 -- returns IsoZombie by id
