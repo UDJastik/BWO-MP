@@ -21,7 +21,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Many Week One scripts (scheduler, TTL objects, etc.) rely on Bandits' `BanditUtils.GetTime()`.
 -- In the MP fork, `BWOUtils` exists but `BanditUtils.GetTime` may be missing, which can crash
--- server-side code paths (e.g. FriendlyFire -> BWOScheduler.Add).
+-- server-side code paths (e.g. FriendlyFire -> BWOEventManager.Add).
 BanditUtils = BanditUtils or {}
 if not BanditUtils.GetTime then
     BanditUtils.GetTime = function()
@@ -53,8 +53,8 @@ if not BanditUtils.AddPriceInflation then
 
         -- Prefer scheduler's cached world age if available; otherwise use GameTime directly.
         local wa = 0
-        if BWOScheduler and BWOScheduler.WorldAge then
-            wa = BWOScheduler.WorldAge
+        if BWOEventManager and BWOEventManager.WorldAge then
+            wa = BWOEventManager.WorldAge
         else
             local gt = getGameTime and getGameTime() or nil
             wa = (gt and gt.getWorldAgeHours and gt:getWorldAgeHours()) or 0
@@ -69,6 +69,100 @@ if not BanditUtils.AddPriceInflation then
         end
 
         return math.floor(price * ((1 + inflation / 100) ^ day))
+    end
+end
+
+-- MP-safe closest-bandit lookup by program (used by WeekOne preacher/entertainer behaviors).
+-- Prefers the server-side cache with cluster fallback; falls back to client light cache in SP-style contexts.
+if not BanditUtils.GetClosestBanditLocationProgram then
+    BanditUtils.GetClosestBanditLocationProgram = function(character, programs)
+        local result = { dist = math.huge, x = false, y = false, z = false, id = false }
+        if (not character) or (not programs) then return result end
+        if type(programs) ~= "table" then return result end
+
+        local cid = BanditUtils.GetCharacterID and BanditUtils.GetCharacterID(character)
+        local cx, cy = character:getX(), character:getY()
+        local distFn = (BanditUtils and BanditUtils.DistTo)
+        if type(distFn) ~= "function" then
+            distFn = function(x1, y1, x2, y2)
+                return math.sqrt(((x1 - x2) * (x1 - x2)) + ((y1 - y2) * (y1 - y2)))
+            end
+        end
+
+        -- tiny helper to check table emptiness without depending on next()
+        local function hasAny(tbl)
+            if type(tbl) ~= "table" then return false end
+            for _ in pairs(tbl) do return true end
+            return false
+        end
+
+        -- Server-first: uses BWOZombie (and clusters inside BWOUtils helper) when available.
+        local candidates = (BWOUtils and BWOUtils.GetAllBanditByProgram and BWOUtils.GetAllBanditByProgram(programs)) or {}
+        if type(candidates) ~= "table" then candidates = {} end
+
+        -- Client/SP fallback: filter the light cache by program name.
+        if not hasAny(candidates) then
+            local progSet = {}
+            for _, p in pairs(programs) do progSet[p] = true end
+            local cache = (BWOZombie and BWOZombie.GetAllB and BWOZombie.GetAllB())
+                          or (BanditZombie and BanditZombie.GetAllB and BanditZombie.GetAllB())
+                          or {}
+            for _, z in pairs(cache) do
+                local prog = getBrainProgramName(z.brain)
+                if prog and progSet[prog] then
+                    candidates[#candidates + 1] = z
+                end
+            end
+        end
+
+        for _, zombie in pairs(candidates) do
+            if type(zombie) == "table" then
+                local zx, zy = zombie.x, zombie.y
+                if zx and zy then
+                    if (not cid) or cid ~= zombie.id then
+                        if (math.abs(zx - cx) < 30) or (math.abs(zy - cy) < 30) then
+                            local dist = distFn(cx, cy, zx, zy)
+                            if dist < result.dist then
+                                result.dist = dist
+                                result.x = zx
+                                result.y = zy
+                                result.z = zombie.z
+                                result.id = zombie.id
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        return result
+    end
+end
+
+-- Returns the highest surface offset (in tiles) for the given square. Used by base placement.
+if not BanditUtils.GetSurfaceOffset then
+    BanditUtils.GetSurfaceOffset = function(x, y, z)
+        local cell = getCell()
+        local square = cell and cell:getGridSquare(x, y, z)
+        if not square then return 0 end
+
+        local tileObjects = square:getLuaTileObjectList()
+        local squareSurfaceOffset = 0
+
+        -- get the object with the highest offset
+        for _, object in pairs(tileObjects) do
+            local surfaceOffsetNoTable = object:getSurfaceOffsetNoTable()
+            if surfaceOffsetNoTable > squareSurfaceOffset then
+                squareSurfaceOffset = surfaceOffsetNoTable
+            end
+
+            local surfaceOffset = object:getSurfaceOffset()
+            if surfaceOffset > squareSurfaceOffset then
+                squareSurfaceOffset = surfaceOffset
+            end
+        end
+
+        return squareSurfaceOffset / 96
     end
 end
 

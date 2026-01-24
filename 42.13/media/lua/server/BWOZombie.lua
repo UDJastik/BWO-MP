@@ -189,7 +189,7 @@ local function onZombieDead(zombie)
     -- In MP, a bandit may die without the local client's OnZombieDead registering it, which can
     -- make the corpse (and its loot) disappear. Register bandit deaths server-side so the
     -- cleanup logic doesn't delete them.
-    if BWOScheduler and BWOScheduler.World and BWOScheduler.World.DeadBodyRemover then
+    if BWOEventManager and BWOEventManager.World and BWOEventManager.World.DeadBodyRemover then
         -- IMPORTANT:
         -- Some Bandits (notably "civilian"/"army" variants) can die before the server ever sees
         -- their "Bandit" variable set (spawn/streaming/one-shot edge-case). If we rely only on
@@ -385,3 +385,4 @@ Events.OnZombieDead.Add(onZombieDead)
 
 Events.EveryOneMinute.Remove(flush)
 Events.EveryOneMinute.Add(flush)
+

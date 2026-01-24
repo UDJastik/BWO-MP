@@ -30,7 +30,7 @@ ZombiePrograms.Postal.Main = function(bandit)
 
     local walkType = "Walk"
     local endurance = 0
-    if BWOScheduler.NPC.Run then 
+    if BWOEventManager.NPC.Run then 
         walkType = "Run"
         endurance = -0.06
     end
@@ -70,9 +70,9 @@ ZombiePrograms.Postal.Main = function(bandit)
     
     -- symptoms
     if math.abs(id) % 4 > 0 then
-        if BWOScheduler.SymptomLevel == 3 then
+        if BWOEventManager.SymptomLevel == 3 then
             walkType = "Limp"
-        elseif BWOScheduler.SymptomLevel >= 4 then
+        elseif BWOEventManager.SymptomLevel >= 4 then
             walkType = "Scramble"
         end
 
@@ -84,7 +84,7 @@ ZombiePrograms.Postal.Main = function(bandit)
             return {status=true, next="Main", tasks=tasks}
         end
     else
-        if BWOScheduler.SymptomLevel >= 4 then walkType = "Run" end
+        if BWOEventManager.SymptomLevel >= 4 then walkType = "Run" end
     end
     
     -- react to events
@@ -98,7 +98,7 @@ ZombiePrograms.Postal.Main = function(bandit)
 
     -- interact with players and other npcs
     --[[
-    if BWOScheduler.SymptomLevel < 3 then
+    if BWOEventManager.SymptomLevel < 3 then
         local subTasks = BanditPrograms.Talk(bandit)
         if #subTasks > 0 then
             for _, subTask in pairs(subTasks) do
@@ -110,7 +110,7 @@ ZombiePrograms.Postal.Main = function(bandit)
     ]]
 
     -- put newspapers to mailbox
-    if BWOScheduler.SymptomLevel < 3 then
+    if BWOEventManager.SymptomLevel < 3 then
         local target = BWOObjects.FindGMD(bandit, "mailbox")      
         if target.x and target.y and target.z and target.dist < 80 then
             local square = cell:getGridSquare(target.x, target.y, target.z)
@@ -172,3 +172,4 @@ ZombiePrograms.Postal.Main = function(bandit)
     
     return {status=true, next="Main", tasks=tasks}
 end
+

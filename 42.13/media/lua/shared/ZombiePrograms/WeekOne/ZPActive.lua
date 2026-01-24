@@ -46,9 +46,9 @@ ZombiePrograms.Active.Main = function(bandit)
 
     -- symptoms
     if math.abs(id) % 4 > 0 then
-        if BWOScheduler.SymptomLevel == 3 then
+        if BWOEventManager.SymptomLevel == 3 then
             walkType = "Limp"
-        elseif BWOScheduler.SymptomLevel >= 4 then
+        elseif BWOEventManager.SymptomLevel >= 4 then
             walkType = "Scramble"
         end
 
@@ -102,9 +102,9 @@ ZombiePrograms.Active.Escape = function(bandit)
 
     -- symptoms
     if math.abs(id) % 4 > 0 then
-        if BWOScheduler.SymptomLevel == 3 then
+        if BWOEventManager.SymptomLevel == 3 then
             walkType = "Limp"
-        elseif BWOScheduler.SymptomLevel >= 4 then
+        elseif BWOEventManager.SymptomLevel >= 4 then
             walkType = "Scramble"
         end
 
@@ -167,4 +167,5 @@ end
 ZombiePrograms.Active.Wait = function(bandit)
     return {status=true, next="Main", tasks={}}
 end
+
 

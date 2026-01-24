@@ -85,7 +85,7 @@ BWOPopControl.Stats = BWOPopControl.Stats or {
     survivor = { spawnedTotal = 0, despawnedTotal = 0, spawnedInterval = 0, despawnedInterval = 0, last = {} },
 }
 
-local SPAWN_CAP = 200
+local SPAWN_CAP = 100
 
 local function clampSpawnCount(cnt)
     cnt = tonumber(cnt) or 0
@@ -93,6 +93,19 @@ local function clampSpawnCount(cnt)
     cnt = math.floor(cnt)
     if cnt > SPAWN_CAP then return SPAWN_CAP end
     return cnt
+end
+
+-- Ensure we never schedule spawns when we are already at (or above) the global cap.
+local function capMissingForSpawn(missing, current)
+    missing = tonumber(missing) or 0
+    local cur = tonumber(current) or 0
+    if missing <= 0 then return missing end
+
+    local allowed = SPAWN_CAP - cur
+    if allowed <= 0 then return 0 end
+
+    if missing > allowed then return allowed end
+    return missing
 end
 
 local function fmtNum(n, digits)
@@ -420,6 +433,42 @@ local function getDensityForPlayer(player)
     return density
 end
 
+-- Street program set must stay consistent between counting and despawn/trim.
+local STREET_PROGRAMS = {"Walker", "Runner", "Patrol", "Postal", "Gardener", "Janitor", "Entertainer", "Vandal"}
+local INHABITANT_PROGRAMS = {"Inhabitant"}
+local SURVIVOR_PROGRAMS = {"Survivor"}
+
+-- Limit how many stale cluster entries we prune per trim pass.
+local STALE_TRIM_MAX_STREET = 50
+local STALE_TRIM_MAX_INHABITANT = 40
+local STALE_TRIM_MAX_SURVIVOR = 15
+local STALE_TRIM_TICK_INTERVAL = 20 -- run trim roughly every N ticks (OnTick runs every 4 ticks)
+
+local function countLoadedByProgram(programs)
+    return countTable(BWOUtils.GetAllBanditByProgram(programs))
+end
+
+-- Returns: loaded, global, trimmed, stale
+local function getCountsWithTrim(programs, maxTrim)
+    local loaded = countLoadedByProgram(programs)
+    local global = loaded
+    local trimmed = 0
+    local stale = 0
+
+    if BWOUtils.CountBanditByProgram then
+        global = BWOUtils.CountBanditByProgram(programs)
+        stale = global - loaded
+        if stale > 0 and BWOPopControl._trimNow and maxTrim and maxTrim > 0 then
+            trimmed = trimClustersByProgram(programs, math.min(stale, maxTrim))
+            if trimmed > 0 then
+                global = global - trimmed
+            end
+        end
+    end
+
+    return loaded, global, trimmed, stale
+end
+
 local function streetsController(targetCnt)
     if not isServer() then return end
     local player = pickDensityPlayer()
@@ -430,13 +479,12 @@ local function streetsController(targetCnt)
     local target = targetCnt * density * hourmod
     if target == 0 then target = targetCnt end
 
-    local programs = {"Walker", "Runner", "Patrol", "Postal", "Gardener", "Janitor", "Entertainer", "Vandal"}
-    local current = (BWOUtils.CountBanditByProgram and BWOUtils.CountBanditByProgram(programs)) or countTable(BWOUtils.GetAllBanditByProgram(programs))
+    local currentLoaded, currentGlobal = getCountsWithTrim(STREET_PROGRAMS, STALE_TRIM_MAX_STREET)
 
-    local missing = target - current
+    local missing = capMissingForSpawn(target - currentLoaded, currentGlobal)
     if missing > 20 then missing = 20 end
 
-    statsRemember("street", { target = target, current = current, missing = missing })
+    statsRemember("street", { target = target, current = currentLoaded, missing = missing, global = currentGlobal })
 
     if missing >= 1 then
         BWOPopControl.StreetsSpawn(missing)
@@ -455,12 +503,12 @@ local function inhabitantsController(targetCnt)
     local target = targetCnt * density
     if target == 0 then target = targetCnt end
 
-    local current = (BWOUtils.CountBanditByProgram and BWOUtils.CountBanditByProgram({"Inhabitant"})) or countTable(BWOUtils.GetAllBanditByProgram({"Inhabitant"}))
+    local currentLoaded, currentGlobal = getCountsWithTrim(INHABITANT_PROGRAMS, STALE_TRIM_MAX_INHABITANT)
 
-    local missing = target - current
+    local missing = capMissingForSpawn(target - currentLoaded, currentGlobal)
     if missing > 20 then missing = 20 end
 
-    statsRemember("inhabitant", { target = target, current = current, missing = missing })
+    statsRemember("inhabitant", { target = target, current = currentLoaded, missing = missing, global = currentGlobal })
 
     if missing >= 1 then
         BWOPopControl.InhabitantsSpawn(missing)
@@ -473,12 +521,12 @@ local function survivorsController(targetCnt)
     if not isServer() then return end
 
     local target = targetCnt
-    local current = (BWOUtils.CountBanditByProgram and BWOUtils.CountBanditByProgram({"Survivor"})) or countTable(BWOUtils.GetAllBanditByProgram({"Survivor"}))
+    local currentLoaded, currentGlobal = getCountsWithTrim(SURVIVOR_PROGRAMS, STALE_TRIM_MAX_SURVIVOR)
 
-    local missing = target - current
+    local missing = capMissingForSpawn(target - currentLoaded, currentGlobal)
     if missing > 4 then missing = 4 end
 
-    statsRemember("survivor", { target = target, current = current, missing = missing })
+    statsRemember("survivor", { target = target, current = currentLoaded, missing = missing, global = currentGlobal })
 
     if missing >= 1 then
         BWOPopControl.SurvivorsSpawn(missing)
@@ -656,7 +704,7 @@ BWOPopControl.StreetsDespawn = function(cnt)
     if #players == 0 then return end
     cnt = cnt or 1
 
-    local removePrg = {"Walker", "Runner", "Postal", "Entertainer", "Janitor", "Medic", "Gardener", "Vandal"}
+    local removePrg = STREET_PROGRAMS
     local zombieList = BWOUtils.GetAllBanditByProgram(removePrg)
     local removed = 0
     for _, zombie in pairs(zombieList) do
@@ -776,7 +824,7 @@ BWOPopControl.InhabitantsSpawn = function(max)
                                 occupantsRequiredGeneric = occupantsRequiredTotal - occupantsRequiredSpecial
                             end
 
-                            if roomData.cidBandit and bz < 0 and BWOScheduler.NPC.Run then
+                            if roomData.cidBandit and bz < 0 and BWOEventManager.NPC.Run then
                                 occupantsRequiredBandit = BWORooms.GetRoomMaxPop(room)
                             end
 
@@ -1059,6 +1107,8 @@ local onTick = function(numTicks)
     if numTicks % 4 > 0 then return end
     if not isServer() then return end
 
+    BWOPopControl._trimNow = (numTicks % STALE_TRIM_TICK_INTERVAL == 0)
+
     local worldAge = BWOUtils.GetWorldAge() 
     local population = BWOPopControl.population
     for group, data in pairs(population) do
@@ -1310,3 +1360,4 @@ Events.EveryOneMinute.Add(everyOneMinute)
 -- periodic summary log for spawn/despawn counters (every 10 ticks)
 Events.OnTick.Remove(logStatsEvery10Ticks)
 Events.OnTick.Add(logStatsEvery10Ticks)
+

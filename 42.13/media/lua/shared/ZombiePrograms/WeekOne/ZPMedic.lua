@@ -23,9 +23,9 @@ ZombiePrograms.Medic.Main = function(bandit)
 
     -- symptoms
     if math.abs(id) % 2 > 0 then
-        if BWOScheduler.SymptomLevel == 3 then
+        if BWOEventManager.SymptomLevel == 3 then
             walkType = "Limp"
-        elseif BWOScheduler.SymptomLevel >= 4 then
+        elseif BWOEventManager.SymptomLevel >= 4 then
             walkType = "Scramble"
         end
 
@@ -37,7 +37,7 @@ ZombiePrograms.Medic.Main = function(bandit)
             return {status=true, next="Main", tasks=tasks}
         end
     else
-        if BWOScheduler.SymptomLevel >= 4 then walkType = "Run" end
+        if BWOEventManager.SymptomLevel >= 4 then walkType = "Run" end
     end
     
     -- CPR

@@ -58,7 +58,7 @@ ZombiePrograms.Vandal.Main = function(bandit)
     local cell = bandit:getCell()
 
     -- too sick to run
-    if BWOScheduler.SymptomLevel > 3 then
+    if BWOEventManager.SymptomLevel > 3 then
         Bandit.ClearTasks(bandit)
         Bandit.SetProgram(bandit, "Walker", {})
 
@@ -154,3 +154,4 @@ ZombiePrograms.Vandal.Main = function(bandit)
     
     return {status=true, next="Main", tasks=tasks}
 end
+

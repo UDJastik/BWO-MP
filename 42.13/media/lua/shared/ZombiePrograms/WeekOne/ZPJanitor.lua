@@ -24,7 +24,7 @@ ZombiePrograms.Janitor.Main = function(bandit)
 
     local walkType = "Walk"
     local endurance = 0
-    if BWOScheduler.NPC.Run then 
+    if BWOEventManager.NPC.Run then 
         walkType = "Run"
         endurance = -0.06
     end
@@ -37,9 +37,9 @@ ZombiePrograms.Janitor.Main = function(bandit)
 
     -- symptoms
     if math.abs(id) % 4 > 0 then
-        if BWOScheduler.SymptomLevel == 3 then
+        if BWOEventManager.SymptomLevel == 3 then
             walkType = "Limp"
-        elseif BWOScheduler.SymptomLevel >= 4 then
+        elseif BWOEventManager.SymptomLevel >= 4 then
             walkType = "Scramble"
         end
 
@@ -51,7 +51,7 @@ ZombiePrograms.Janitor.Main = function(bandit)
             return {status=true, next="Main", tasks=tasks}
         end
     else
-        if BWOScheduler.SymptomLevel >= 4 then walkType = "Run" end
+        if BWOEventManager.SymptomLevel >= 4 then walkType = "Run" end
     end
     
     -- react to events
@@ -64,7 +64,7 @@ ZombiePrograms.Janitor.Main = function(bandit)
     end
 
     -- pickup trash
-    if BWOScheduler.SymptomLevel < 3 then
+    if BWOEventManager.SymptomLevel < 3 then
         local target = BWOObjects.FindGMD(bandit, "trash")      
         if target.x and target.y and target.z and target.dist < 60 then
             local square = cell:getGridSquare(target.x, target.y, target.z)
@@ -117,3 +117,4 @@ ZombiePrograms.Janitor.Main = function(bandit)
     
     return {status=true, next="Main", tasks=tasks}
 end
+

@@ -7,7 +7,7 @@ BanditPrograms.Symptoms = function(bandit)
 
     -- MP version historically ran symptoms unconditionally, even when the global SymptomLevel is 0
     -- (first ~34 in-game hours). That caused cough/vomit on day 1. Gate symptoms by scheduler level.
-    local symptomLevel = (BWOScheduler and BWOScheduler.SymptomLevel) or 0
+    local symptomLevel = (BWOEventManager and BWOEventManager.SymptomLevel) or 0
     if symptomLevel <= 0 then
         return tasks
     end
@@ -391,7 +391,7 @@ end
 BanditPrograms.Talk = function(bandit)
     local tasks = {}
 
-    if not BWOScheduler.NPC.Talk then return tasks end
+    if not BWOEventManager.NPC.Talk then return tasks end
 
     local config = {}
     config.mustSee = false
@@ -466,7 +466,7 @@ BanditPrograms.Talk = function(bandit)
                 elseif blood and blood > 0 then
                     Bandit.Say(bandit, "STREETCHATBLOOD")
                 else
-                    if BWOScheduler.WorldAge < 34 then
+                    if BWOEventManager.WorldAge < 34 then
                         Bandit.Say(bandit, "STREETCHAT1")
                     else
                         Bandit.Say(bandit, "STREETCHAT2")
@@ -495,7 +495,7 @@ end
 BanditPrograms.Bench = function(bandit)
     local tasks = {}
 
-    if not BWOScheduler.NPC.SitBench then return tasks end
+    if not BWOEventManager.NPC.SitBench then return tasks end
 
     local id = BanditUtils.GetCharacterID(bandit)
     local gameTime = getGameTime()
@@ -590,7 +590,7 @@ BanditPrograms.Events = function(bandit)
     local player = getSpecificPlayer(0)
     if not player then return end
 
-    if not BWOScheduler.NPC.ReactProtests then return tasks end
+    if not BWOEventManager.NPC.ReactProtests then return tasks end
 
     local cell = bandit:getCell()
     local id = BanditUtils.GetCharacterID(bandit)
@@ -643,7 +643,7 @@ BanditPrograms.Events = function(bandit)
         end
     end
 
-    if not BWOScheduler.NPC.ReactDeadBody then return tasks end
+    if not BWOEventManager.NPC.ReactDeadBody then return tasks end
 
     local target = BWOObjects.FindDeadBody(bandit)
     if target.x and target.y and target.z then
@@ -668,7 +668,7 @@ BanditPrograms.Events = function(bandit)
         end
     end
 
-    if not BWOScheduler.NPC.ReactPreacher then return tasks end
+    if not BWOEventManager.NPC.ReactPreacher then return tasks end
 
     local target = BWOObjects.FindGMD(bandit, "preacher")
     if target.x and target.y and target.z then
@@ -696,7 +696,7 @@ BanditPrograms.Events = function(bandit)
         end
     end
 
-    if not BWOScheduler.NPC.ReactEntertainers then return tasks end
+    if not BWOEventManager.NPC.ReactEntertainers then return tasks end
 
     local target = BWOObjects.FindGMD(bandit, "entertainer")
     if target.x and target.y and target.z then
@@ -729,7 +729,7 @@ BanditPrograms.ATM = function(bandit)
     local tasks = {}
     local cell = bandit:getCell()
 
-    if not BWOScheduler.NPC.BankRun then return tasks end
+    if not BWOEventManager.NPC.BankRun then return tasks end
 
     local target = BWOObjects.FindGMD(bandit, "atm")      
     if target.x and target.y and target.z and target.dist < 25 then
@@ -791,3 +791,4 @@ BanditPrograms.Fallback = function(bandit)
 
     return tasks
 end
+

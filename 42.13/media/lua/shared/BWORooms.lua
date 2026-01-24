@@ -2137,19 +2137,19 @@ BWORooms.GetRoomPopMod = function(room)
         elseif hour < 24 then
             popMod = 1
         end
-        if BWOScheduler.SymptomLevel >= 2 then
+        if BWOEventManager.SymptomLevel >= 2 then
             popMod = popMod * 0.5
         end
     elseif BWORooms.IsEmpty(room) then
         popMod = 0
     elseif BWORooms.IsMedical(room) then
-        if BWOScheduler.SymptomLevel == 1 then
+        if BWOEventManager.SymptomLevel == 1 then
             popMod = 1.5
-        elseif BWOScheduler.SymptomLevel == 2 then
+        elseif BWOEventManager.SymptomLevel == 2 then
             popMod = 3
-        elseif BWOScheduler.SymptomLevel == 3 then
+        elseif BWOEventManager.SymptomLevel == 3 then
             popMod = 4
-        elseif BWOScheduler.SymptomLevel == 4 then
+        elseif BWOEventManager.SymptomLevel == 4 then
             popMod = 4.5
         end
 
@@ -2161,7 +2161,7 @@ BWORooms.GetRoomPopMod = function(room)
         else
             popMod = 0
         end
-        if BWOScheduler.SymptomLevel >= 2 then
+        if BWOEventManager.SymptomLevel >= 2 then
             popMod = popMod * 2
         end
     elseif roomName == "hall" then

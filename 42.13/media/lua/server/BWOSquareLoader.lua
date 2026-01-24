@@ -1,5 +1,5 @@
 require "BWOGMD"
-require "BWOScheduler"
+require "BWOEventManager"
 
 BWOSquareLoader = BWOSquareLoader or {}
 
@@ -424,7 +424,7 @@ local processSquare = function(square,player)
     local remove = BWOSquareLoader.remove
     local spriteMap = BWOSquareLoader.spriteMap
     local customNameMap = BWOSquareLoader.customNameMap
-    local scheduler = BWOScheduler.World
+    local scheduler = BWOEventManager.World
 
 	local x, y, z, md = square:getX(), square:getY(), square:getZ(), square:getModData()
     if not md.BWO then md.BWO = {} end
@@ -676,9 +676,9 @@ local setupWorld = function()
         local cell = player:getCell()
         local px, py = player:getX(), player:getY()
 
-        BWOScheduler.World.ObjectRemover = true
-        BWOScheduler.World.DeadBodyRemover = true
-        BWOScheduler.World.GlobalObjectAdder = true
+        BWOEventManager.World.ObjectRemover = true
+        BWOEventManager.World.DeadBodyRemover = true
+        BWOEventManager.World.GlobalObjectAdder = true
 
         for z=0, 2 do
             for y=-150, 150 do
@@ -724,7 +724,7 @@ end
 -- removes burnt / smashed vehicles
 -- apparently vehicle loading is deffered relative to square load, so this needs to be handled separately
 local processVehicles = function()
-    if not BWOScheduler.World.VehicleFixer then return end
+    if not BWOEventManager.World.VehicleFixer then return end
 
     local vehicleList = getCell():getVehicles()
     local toDelete = {}
@@ -797,7 +797,7 @@ local processFire = function(fire)
 
     if BWOPopControl.Fireman.On and BWOPopControl.Fireman.Cooldown <= 0 then
         -- BWOPopControl.Fireman.Cooldown = 1 -- update immediately so that it won't clutter
-        BWOScheduler.Add("CallFireman", params, 10)
+        BWOEventManager.Add("CallFireman", params, 10)
     end
 
     local args = {x=params.x, y=params.y, z=params.z, otype="fire", ttl=BanditUtils.GetTime()+25000}

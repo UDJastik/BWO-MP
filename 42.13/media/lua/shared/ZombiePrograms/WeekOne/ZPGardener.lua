@@ -30,7 +30,7 @@ ZombiePrograms.Gardener.Main = function(bandit)
 
     local walkType = "Walk"
     local endurance = 0
-    if   BWOScheduler.NPC.Run then 
+    if   BWOEventManager.NPC.Run then 
         walkType = "Run"
         endurance = -0.06
     end
@@ -66,9 +66,9 @@ ZombiePrograms.Gardener.Main = function(bandit)
     
     -- symptoms
     if math.abs(id) % 4 > 0 then
-        if BWOScheduler.SymptomLevel == 3 then
+        if BWOEventManager.SymptomLevel == 3 then
             walkType = "Limp"
-        elseif BWOScheduler.SymptomLevel >= 4 then
+        elseif BWOEventManager.SymptomLevel >= 4 then
             walkType = "Scramble"
         end
 
@@ -80,7 +80,7 @@ ZombiePrograms.Gardener.Main = function(bandit)
             return {status=true, next="Main", tasks=tasks}
         end
     else
-        if BWOScheduler.SymptomLevel >= 4 then walkType = "Run" end
+        if BWOEventManager.SymptomLevel >= 4 then walkType = "Run" end
     end
     
     -- react to events
@@ -102,7 +102,7 @@ ZombiePrograms.Gardener.Main = function(bandit)
     end
 
     -- water the flowers
-    if BWOScheduler.SymptomLevel < 3 and minute % 5 < 2 then
+    if BWOEventManager.SymptomLevel < 3 and minute % 5 < 2 then
         local target = BWOObjects.FindGMD(bandit, "flowerbed")      
         if target.x and target.y and target.z and target.dist < 50 then
             local square = cell:getGridSquare(target.x, target.y, target.z)
@@ -151,3 +151,4 @@ ZombiePrograms.Gardener.Main = function(bandit)
     
     return {status=true, next="Main", tasks=tasks}
 end
+

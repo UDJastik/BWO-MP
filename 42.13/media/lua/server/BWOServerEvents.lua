@@ -452,10 +452,10 @@ BWOServerEvents.ChopperFliers = function(params)
 
             -- schedule flyer drops near the flyby location (server-side)
             local sp = {x = px, y = py, count = 160}
-            if BWOScheduler and BWOScheduler.Add then
-                BWOScheduler.Add("ChopperFliersStage2", sp, 9000)
-                BWOScheduler.Add("ChopperFliersStage2", sp, 11000)
-                BWOScheduler.Add("ChopperFliersStage2", sp, 12600)
+            if BWOEventManager and BWOEventManager.Add then
+                BWOEventManager.Add("ChopperFliersStage2", sp, 9000)
+                BWOEventManager.Add("ChopperFliersStage2", sp, 11000)
+                BWOEventManager.Add("ChopperFliersStage2", sp, 12600)
             end
         end
     end
@@ -2094,15 +2094,15 @@ BWOServerEvents.FinalSolution = function(params)
             for _, nuke in pairs(nukes) do
                 if type(nuke) == "table" and nuke.x and nuke.y and nuke.r then
                     if isInCircle(px, py, nuke.x, nuke.y, nuke.r) then
-                        BWOScheduler.Add("Nuke", paramsNear, 50000)
+                        BWOEventManager.Add("Nuke", paramsNear, 50000)
                     else
-                        BWOScheduler.Add("NukeDist", nuke, ct)
+                        BWOEventManager.Add("NukeDist", nuke, ct)
                         ct = ct + 4000 + ZombRand(10000)
                     end
                 end
             end
 
-            BWOScheduler.Add("WeatherStorm", {len = 1440}, 1000)
+            BWOEventManager.Add("WeatherStorm", {len = 1440}, 1000)
         end
     end
 end
@@ -2642,3 +2642,4 @@ BWOServerEvents.StartDay = function(params)
         sendServerCommand("Events", "StartDay", paramsClient)
     end
 end
+

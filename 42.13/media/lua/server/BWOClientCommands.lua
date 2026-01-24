@@ -4,6 +4,93 @@ require "BWOCompatibility"
 BWOServer = {}
 BWOServer.Commands = {}
 
+-- Brain/program helper: accept both table and string program storage.
+local function getProgramName(brain)
+    if not brain then return nil end
+    local p = brain.program
+    if not p then return nil end
+    if type(p) == "string" then return p end
+    if type(p) == "table" then return p.name or p.Name end
+    return nil
+end
+
+local function getAllPlayersSafe()
+    if BWOUtils and BWOUtils.GetAllPlayers then
+        return BWOUtils.GetAllPlayers()
+    end
+    local list = getOnlinePlayers()
+    local out = {}
+    if list then
+        for i = 0, list:size() - 1 do
+            local p = list:get(i)
+            if p then out[#out + 1] = p end
+        end
+    end
+    return out
+end
+
+local function updateClusterProgram(zid, programName, stage, hostile, hostileP)
+    if not zid then return end
+    if not GetBanditClusterData then return end
+    local gmd = GetBanditClusterData(zid)
+    if not (gmd and gmd[zid]) then return end
+    local brain = gmd[zid]
+
+    if programName or stage then
+        if type(brain.program) ~= "table" then
+            brain.program = { name = brain.program }
+        end
+        if programName then brain.program.name = programName end
+        if stage then brain.program.stage = stage end
+    end
+
+    if hostile ~= nil then brain.hostile = hostile end
+    if hostileP ~= nil then brain.hostileP = hostileP end
+
+    if TransmitBanditCluster then
+        TransmitBanditCluster(zid)
+    end
+end
+
+local function broadcastBrainSync(zid, programName, stage, hostile, hostileP)
+    if not zid then return end
+    local payload = { id = zid }
+    if programName ~= nil then payload.program = programName end
+    if stage ~= nil then payload.stage = stage end
+    if hostile ~= nil then payload.hostile = hostile end
+    if hostileP ~= nil then payload.hostileP = hostileP end
+
+    local players = getAllPlayersSafe()
+    for _, pl in pairs(players or {}) do
+        sendServerCommand(pl, "Commands", "BanditBrainSync", payload)
+    end
+end
+
+local function syncBrainState(actor, zid, programName, stage)
+    if not zid then return end
+
+    local hostile, hostileP
+    if actor and BanditBrain and BanditBrain.Get then
+        local brain = BanditBrain.Get(actor)
+        if brain then
+            hostile = brain.hostile
+            hostileP = brain.hostileP
+        end
+    end
+
+    updateClusterProgram(zid, programName, stage, hostile, hostileP)
+    broadcastBrainSync(zid, programName, stage, hostile, hostileP)
+end
+
+local function broadcastBanditSay(zid, phrase, force)
+    if not zid or not phrase then return end
+    local payload = { id = zid, phrase = phrase, force = force and true or false }
+    local players = getAllPlayersSafe()
+    for _, pl in pairs(players or {}) do
+        sendServerCommand(pl, "Commands", "BanditSay", payload)
+    end
+end
+
 -- Debug: confirms this file is actually loaded on the server.
 dprint("[BWO] server loaded: BWOClientCommands.lua", 4)
 
@@ -163,7 +250,7 @@ BWOServer.Commands.ActivateWitness = function(player, args)
                     local canSee = actor:CanSee(player)
                     if canSee or dist < 3 then
                         for _, prg in pairs(activatePrograms) do
-                            if witness.brain.program and witness.brain.program.name == prg then
+                            if getProgramName(witness.brain) == prg then
                                 Bandit.ClearTasks(actor)
 
                                 local brave = false
@@ -177,14 +264,16 @@ BWOServer.Commands.ActivateWitness = function(player, args)
                                 if brave then
                                     Bandit.SetProgram(actor, "Police", {})
                                     Bandit.SetHostileP(actor, true)
-                                    Bandit.Say(actor, "SPOTTED")
+                                    broadcastBanditSay(witness.id, "SPOTTED")
+                                    syncBrainState(actor, witness.id, "Police", "Prepare")
                                 else
                                     local r = 4
                                     if actor:isFemale() then r = 10 end
 
                                     Bandit.SetProgram(actor, "Active", {})
                                     Bandit.SetHostileP(actor, true)
-                                    Bandit.Say(actor, "REACTCRIME")
+                                    broadcastBanditSay(witness.id, "REACTCRIME")
+                                    syncBrainState(actor, witness.id, "Active", "Prepare")
                                 end
                             end
                         end
@@ -248,7 +337,9 @@ BWOServer.Commands.ActivateTargets = function(player, args)
         local gmd = GetBanditClusterData(zid)
         if not (gmd and gmd[zid]) then return end
         local brain = gmd[zid]
-        brain.program = brain.program or {}
+        if type(brain.program) ~= "table" then
+            brain.program = { name = brain.program }
+        end
         brain.program.name = programName
         brain.program.stage = stage
         -- Clear tasks so they don't keep following a stale target.
@@ -285,7 +376,7 @@ BWOServer.Commands.ActivateTargets = function(player, args)
             local dy = player:getY() - witness.y
             local dist = math.sqrt(dx * dx + dy * dy)
             if dist < min then
-                if witness.brain.hostile or (witness.brain.program and witness.brain.program.name == "Vandal") then
+                if witness.brain.hostile or (getProgramName(witness.brain) == "Vandal") then
                     wasLegal = true
                 else
                     local actor = BWOZombie.GetInstanceById(witness.id)
@@ -295,7 +386,7 @@ BWOServer.Commands.ActivateTargets = function(player, args)
                         -- For "gunshot" (severity>=3) react by distance/sound even without LOS.
                         if (severity >= 3) or (canSee1 and canSee2) then
                             for _, prg in pairs(activatePrograms) do
-                                if witness.brain.program and witness.brain.program.name == prg then
+                                if getProgramName(witness.brain) == prg then
                                     Bandit.ClearTasks(actor)
 
                                     local brave = false
@@ -312,21 +403,22 @@ BWOServer.Commands.ActivateTargets = function(player, args)
                                         -- Update both the live actor and the cluster brain (cluster is authoritative on dedi).
                                         Bandit.SetProgram(actor, "Active", {})
                                         print("Witness ID: " .. witness.id .. " changed to Active")
-                                        print("Witness program: " .. witness.brain.program.name)
+                                        print("Witness program: " .. tostring(getProgramName(witness.brain)))
+                                        local stage
                                         if ZombRand(2) == 0 then
                                         -- Force "Escape" stage so the program doesn't reselect a combat target and walk toward the player.
-                                            Bandit.SetProgramStage(actor, "Escape")
-                                        else
-                                            Bandit.SetProgramStage(actor, "Surrender")
+                                            stage = "Escape"
                                         end
-                                        forceProgramStageOnCluster(witness.id, "Active", "Escape")
+                                        Bandit.SetProgramStage(actor, stage)
+                                        forceProgramStageOnCluster(witness.id, "Active", stage)
+                                        syncBrainState(actor, witness.id, "Active", stage)
                                         reacted = reacted + 1
 
                                         if not wasLegal then
                                             if brave then
-                                                Bandit.Say(actor, "SPOTTED")
+                                                broadcastBanditSay(witness.id, "SPOTTED")
                                             else
-                                                Bandit.Say(actor, "REACTCRIME")
+                                                broadcastBanditSay(witness.id, "REACTCRIME")
                                             end
                                         end
                                         break
@@ -338,8 +430,9 @@ BWOServer.Commands.ActivateTargets = function(player, args)
                                             if severity >= 2 then
                                                 Bandit.SetHostileP(actor, true)
                                             end
-                                            Bandit.Say(actor, "SPOTTED")
+                                            broadcastBanditSay(witness.id, "SPOTTED")
                                         end
+                                        syncBrainState(actor, witness.id, "Police", "Prepare")
                                     else
                                         Bandit.SetProgram(actor, "Active", {})
                                         if not wasLegal then
@@ -348,8 +441,9 @@ BWOServer.Commands.ActivateTargets = function(player, args)
                                             if ZombRand(r) == 0 and severity >= 2 then
                                                 Bandit.SetHostileP(actor, true)
                                             end
-                                            Bandit.Say(actor, "REACTCRIME")
+                                            broadcastBanditSay(witness.id, "REACTCRIME")
                                         end
+                                        syncBrainState(actor, witness.id, "Active", "Prepare")
                                     end
                                 end
                             end
@@ -408,7 +502,9 @@ BWOServer.Commands.NPCGunshot = function(player, args)
         local gmd = GetBanditClusterData(zid)
         if not (gmd and gmd[zid]) then return end
         local brain = gmd[zid]
-        brain.program = brain.program or {}
+        if type(brain.program) ~= "table" then
+            brain.program = { name = brain.program }
+        end
         brain.program.name = programName
         brain.program.stage = stage
         brain.tasks = {}
@@ -456,7 +552,7 @@ end
 BWOServer.Commands.ActivateExcercise = function(player, args)
     if not isServer() then return end
     if not player then return end
-    if not (BWOScheduler and BWOScheduler.Anarchy and BWOScheduler.Anarchy.Transactions) then return end
+    if not (BWOEventManager and BWOEventManager.Anarchy and BWOEventManager.Anarchy.Transactions) then return end
 
     local min = (args and args.min) or 5
 
@@ -475,7 +571,7 @@ BWOServer.Commands.ActivateExcercise = function(player, args)
                     local canSee = actor:CanSee(player)
                     if canSee or dist < 3 then
                         for _, prg in pairs(activatePrograms) do
-                            if witness.brain.program and witness.brain.program.name == prg then
+                            if getProgramName(witness.brain) == prg then
                                 if not Bandit.HasTaskType(actor, "PushUp") then
                                     Bandit.ClearTasks(actor)
                                     Bandit.AddTask(actor, {action = "PushUp", time = 2000})
@@ -498,7 +594,7 @@ end
 BWOServer.Commands.MoneyEarn = function(player, args)
     if not isServer() then return end
     if not player then return end
-    if not (BWOScheduler and BWOScheduler.Anarchy and BWOScheduler.Anarchy.Transactions) then return end
+    if not (BWOEventManager and BWOEventManager.Anarchy and BWOEventManager.Anarchy.Transactions) then return end
 
     local amount = args and tonumber(args.amount) or 0
     if amount <= 0 then return end
@@ -508,7 +604,7 @@ end
 BWOServer.Commands.MoneyPay = function(player, args)
     if not isServer() then return end
     if not player then return end
-    if not (BWOScheduler and BWOScheduler.Anarchy and BWOScheduler.Anarchy.Transactions) then return end
+    if not (BWOEventManager and BWOEventManager.Anarchy and BWOEventManager.Anarchy.Transactions) then return end
 
     local amount = args and tonumber(args.amount) or 0
     if amount <= 0 then return end
@@ -561,16 +657,16 @@ end
 BWOServer.Commands.PlayerWokeUp = function(player, args)
     if not isServer() then return end
     if not player then return end
-    if not (BWOScheduler and BWOScheduler.Add) then return end
+    if not (BWOEventManager and BWOEventManager.Add) then return end
     local params = { night = args and args.night or nil }
-    BWOScheduler.Add("Dream", params, 600)
+    BWOEventManager.Add("Dream", params, 600)
 end
 
 -- Time based income tick (client triggers each minute, server applies every 5 minutes)
 BWOServer.Commands.TimeIncomeTick = function(player, args)
     if not isServer() then return end
     if not player then return end
-    if not (BWOScheduler and BWOScheduler.Anarchy and BWOScheduler.Anarchy.Transactions) then return end
+    if not (BWOEventManager and BWOEventManager.Anarchy and BWOEventManager.Anarchy.Transactions) then return end
     if player:isAsleep() then return end
 
     local gametime = getGameTime()
@@ -641,7 +737,7 @@ BWOServer.Commands.ShahidDetonate = function(player, args)
     if not zombie then return end
 
     local brain = BanditBrain and BanditBrain.Get and BanditBrain.Get(zombie) or nil
-    if not (brain and brain.program and brain.program.name == "Shahid") then return end
+    if getProgramName(brain) ~= "Shahid" then return end
 
     local md = zombie:getModData()
     if md and md.BWOShahidDetonated then return end
@@ -887,8 +983,8 @@ BWOServer.Commands.FriendlyFire = function(player, args)
     end
 
     -- killing hostile bandits is ok (and can be rewarded)
-    if brain.program and brain.program.name == "Vandal" or brain.hostile then
-        if BWOScheduler and BWOScheduler.Anarchy and BWOScheduler.Anarchy.Transactions then
+    if brain.hostile or getProgramName(brain) == "Vandal" then
+        if BWOEventManager and BWOEventManager.Anarchy and BWOEventManager.Anarchy.Transactions then
             local profession = player:getDescriptor() and player:getDescriptor():getCharacterProfession() or nil
             if profession == "policeofficer" then
                 bwoGiveMoney(player, 5)
@@ -946,27 +1042,27 @@ BWOServer.Commands.FriendlyFire = function(player, args)
                         if brain.occupation == "Police" then
                             if BWOPopControl and BWOPopControl.SWAT and BWOPopControl.SWAT.On then
                                 params.hostile = true
-                                BWOScheduler.Add("CallSWAT", params, 19500)
+                                BWOEventManager.Add("CallSWAT", params, 19500)
                             end
                         else
                             if BWOPopControl and BWOPopControl.Police and BWOPopControl.Police.On then
                                 params.hostile = true
-                                BWOScheduler.Add("CallCops", params, 12000)
+                                BWOEventManager.Add("CallCops", params, 12000)
                             end
                         end
                     end
 
                     -- call medics
                     if BWOPopControl and BWOPopControl.Medics and BWOPopControl.Medics.On then
-                        BWOScheduler.Add("CallMedics", params, 15000)
+                        BWOEventManager.Add("CallMedics", params, 15000)
                     elseif BWOPopControl and BWOPopControl.Hazmats and BWOPopControl.Hazmats.On then
-                        BWOScheduler.Add("CallHazmats", params, 15500)
+                        BWOEventManager.Add("CallHazmats", params, 15500)
                     end
 
                     -- witnessing civilians need to change peaceful behavior to active
                     local activatePrograms = {"Patrol", "Police", "Inhabitant", "Walker", "Runner", "Postal", "Janitor", "Gardener", "Entertainer", "Vandal", "Passenger"}
                     for _, prg in pairs(activatePrograms) do
-                        if witness.brain.program and witness.brain.program.name == prg then
+                        if getProgramName(witness.brain) == prg then
                             if witness.brain.occupation == "Police" or witness.brain.occupation == "Security" or witness.brain.occupation == "Army" then
                                 Bandit.ClearTasks(actor)
                                 local unarmed = isUnarmed(actor)
@@ -988,7 +1084,7 @@ BWOServer.Commands.FriendlyFire = function(player, args)
                                     if wasPlayerFault then
                                         Bandit.SetHostileP(actor, true)
                                     end
-                                    Bandit.Say(actor, "REACTCRIME")
+                                    broadcastBanditSay(witness.id, "REACTCRIME")
                                 end
                             end
                         end
@@ -1039,11 +1135,11 @@ BWOServer.Commands.SetVariant = function(player, args)
 end
 
 -- Ensure scheduler + server events are loaded.
--- Some commands (FriendlyFire/PlayerWokeUp/etc.) enqueue BWOScheduler events (CallCops/CallMedics/...),
--- so BWOScheduler + BWOServerEvents must exist on the server by the time client commands arrive.
+-- Some commands (FriendlyFire/PlayerWokeUp/etc.) enqueue BWOEventManager events (CallCops/CallMedics/...),
+-- so BWOEventManager + BWOServerEvents must exist on the server by the time client commands arrive.
 if not BWOPopControl then require "BWOPopControl" end
 if not BWOServerEvents then require "BWOServerEvents" end
-if not BWOScheduler then require "BWOScheduler" end
+if not BWOEventManager then require "BWOEventManager" end
 
 -- main
 local onClientCommand = function(module, command, player, args)

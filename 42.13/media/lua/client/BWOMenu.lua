@@ -163,12 +163,12 @@ BWOMenu.EventNuke = function(player)
     params.x = player:getX()
     params.y = player:getY()
     params.r = 80
-    BWOScheduler.Add("Nuke", params, 100)
+    BWOEventManager.Add("Nuke", params, 100)
 end
 
 BWOMenu.EventFinalSolution = function(player)
     local params = {}
-    BWOScheduler.Add("FinalSolution", params, 100)
+    BWOEventManager.Add("FinalSolution", params, 100)
 end
 
 BWOMenu.EventFliers = function(player)
@@ -176,7 +176,7 @@ BWOMenu.EventFliers = function(player)
     params.x = player:getX()
     params.y = player:getY()
     params.z = player:getZ()
-    BWOScheduler.Add("ChopperFliers", params, 100)
+    BWOEventManager.Add("ChopperFliers", params, 100)
 end
 
 BWOMenu.EventEntertainer = function(player, eid)
@@ -185,13 +185,13 @@ BWOMenu.EventEntertainer = function(player, eid)
     params.y = player:getY()
     params.z = player:getZ()
     params.eid = eid
-    BWOScheduler.Add("Entertainer", params, 100)
+    BWOEventManager.Add("Entertainer", params, 100)
 end
 
 BWOMenu.EventHome = function (player)
     local params = {}
     params.addRadio = true
-    BWOScheduler.Add("BuildingHome", params, 100)
+    BWOEventManager.Add("BuildingHome", params, 100)
 end
 
 BWOMenu.EventHeliCrash = function (player)
@@ -199,7 +199,7 @@ BWOMenu.EventHeliCrash = function (player)
     params.x = -20
     params.y = 0
     params.vtype = "pzkHeli350PoliceWreck"
-    BWOScheduler.Add("VehicleCrash", params, 100)
+    BWOEventManager.Add("VehicleCrash", params, 100)
 end
 
 BWOMenu.EventHorde = function (player)
@@ -207,14 +207,14 @@ BWOMenu.EventHorde = function (player)
     params.cnt = 100
     params.x = 45
     params.y = 45
-    BWOScheduler.Add("Horde", params, 100)
+    BWOEventManager.Add("Horde", params, 100)
 end
 
 BWOMenu.EventParty = function (player)
     local params = {}
     params.roomName = "bedroom"
     params.intensity = 8
-    BWOScheduler.Add("BuildingParty", params, 100)
+    BWOEventManager.Add("BuildingParty", params, 100)
 end
 
 BWOMenu.EventJetEngine = function (player)
@@ -223,7 +223,7 @@ BWOMenu.EventJetEngine = function (player)
     params.y = player:getY()
     params.z = player:getZ()
     params.dir = -90
-    BWOScheduler.Add("JetEngine", params, 100)
+    BWOEventManager.Add("JetEngine", params, 100)
 end
 
 BWOMenu.EventJetFighterRun = function (player)
@@ -252,7 +252,7 @@ BWOMenu.EventProtest = function(player)
     params.x = player:getX()
     params.y = player:getY()
     params.z = player:getZ()
-    BWOScheduler.Add("Protest", params, 100)
+    BWOEventManager.Add("Protest", params, 100)
 end
 
 BWOMenu.EventReanimate = function(player)
@@ -262,12 +262,12 @@ BWOMenu.EventReanimate = function(player)
     params.z = player:getZ()
     params.r = 50
     params.chance = 100
-    BWOScheduler.Add("Reanimate", params, 100)
+    BWOEventManager.Add("Reanimate", params, 100)
 end
 
 BWOMenu.EventStart = function(player)
     local params = {}
-    BWOScheduler.Add("Start", params, 100)
+    BWOEventManager.Add("Start", params, 100)
 end
 
 BWOMenu.EventStartDay = function(player)
@@ -282,12 +282,12 @@ BWOMenu.EventPoliceRiot = function(player)
     local params = {}
     params.intensity = 10
     params.hostile = true
-    BWOScheduler.Add("PoliceRiot", params, 100)
+    BWOEventManager.Add("PoliceRiot", params, 100)
 end
 
 BWOMenu.EventOpenDoors = function(player)
     local params = {x1=7684, y1=11818, z1=0, x2=7693, y2=11857, z2=1}
-    BWOScheduler.Add("OpenDoors", params, 100)
+    BWOEventManager.Add("OpenDoors", params, 100)
 end
 
 BWOMenu.EventPlaneCrash = function(player)
@@ -302,61 +302,61 @@ BWOMenu.EventDrawPlane = function(player)
     params.x = player:getX()
     params.y = player:getY()
     params.z = 1
-    BWOScheduler.Add("DrawPlane", params, 100)
+    BWOEventManager.Add("DrawPlane", params, 100)
 end
 
 BWOMenu.EventPower = function(player, on)
     local params = {}
     params.on = on
-    BWOScheduler.Add("SetHydroPower", params, 100)
+    BWOEventManager.Add("SetHydroPower", params, 100)
 end
 
 BWOMenu.EventBikers = function(player)
     local params = {}
     params.intensity = 5
-    BWOScheduler.Add("Bikers", params, 100)
+    BWOEventManager.Add("Bikers", params, 100)
 end
 
 BWOMenu.EventCriminals = function(player)
     local params = {}
     params.intensity = 3
-    BWOScheduler.Add("Criminals", params, 100)
+    BWOEventManager.Add("Criminals", params, 100)
 end
 
 BWOMenu.EventDream = function(player)
     local params = {}
     params.night = 5
-    BWOScheduler.Add("Dream", params, 100)
+    BWOEventManager.Add("Dream", params, 100)
 end
 
 BWOMenu.EventBandits = function(player)
     local params = {}
     params.intensity = 7
-    BWOScheduler.Add("Bandits", params, 100)
+    BWOEventManager.Add("Bandits", params, 100)
 end
 
 BWOMenu.EventThieves = function(player)
     local params = {}
     params.intensity = 2
-    BWOScheduler.Add("Thieves", params, 100)
+    BWOEventManager.Add("Thieves", params, 100)
 end
 
 BWOMenu.EventShahids = function(player)
     local params = {}
     params.intensity = 1
-    BWOScheduler.Add("Shahids", params, 100)
+    BWOEventManager.Add("Shahids", params, 100)
 end
 
 BWOMenu.EventHammerBrothers = function(player)
     local params = {}
     params.intensity = 2
-    BWOScheduler.Add("HammerBrothers", params, 100)
+    BWOEventManager.Add("HammerBrothers", params, 100)
 end
 
 BWOMenu.EventStorm = function(player)
     local params = {}
     params.len = 1440
-    BWOScheduler.Add("WeatherStorm", params, 1000)
+    BWOEventManager.Add("WeatherStorm", params, 1000)
 end
 
 BWOMenu.SpotRooms = function(player)
@@ -496,3 +496,4 @@ function BWOMenu.WorldContextMenuPre(playerID, context, worldobjects, test)
 end
 
 Events.OnPreFillWorldObjectContextMenu.Add(BWOMenu.WorldContextMenuPre)
+

@@ -38,7 +38,7 @@ ZombiePrograms.Walker.Main = function(bandit)
 
     local walkType = "Walk"
     local endurance = 0
-    if BWOScheduler.NPC.Run then 
+    if BWOEventManager.NPC.Run then 
         walkType = "Run"
         endurance = -0.06
     end
@@ -64,9 +64,9 @@ ZombiePrograms.Walker.Main = function(bandit)
    
     -- symptoms
     if math.abs(id) % 4 > 0 then
-        if BWOScheduler.SymptomLevel == 3 then
+        if BWOEventManager.SymptomLevel == 3 then
             walkType = "Limp"
-        elseif BWOScheduler.SymptomLevel >= 4 then
+        elseif BWOEventManager.SymptomLevel >= 4 then
             walkType = "Scramble"
         end
 
@@ -79,11 +79,11 @@ ZombiePrograms.Walker.Main = function(bandit)
             return {status=true, next="Main", tasks=tasks}
         end
     else
-        if BWOScheduler.SymptomLevel >= 4 then walkType = "Run" end
+        if BWOEventManager.SymptomLevel >= 4 then walkType = "Run" end
     end
   
     -- react to events
-    if BWOScheduler.SymptomLevel < 4 then
+    if BWOEventManager.SymptomLevel < 4 then
         local subTasks = BanditPrograms.Events(bandit)
         if #subTasks > 0 then
             for _, subTask in pairs(subTasks) do
@@ -94,7 +94,7 @@ ZombiePrograms.Walker.Main = function(bandit)
     end
 
     -- atm
-    if BWOScheduler.SymptomLevel < 4 then
+    if BWOEventManager.SymptomLevel < 4 then
         local subTasks = BanditPrograms.ATM(bandit)
         if #subTasks > 0 then
             for _, subTask in pairs(subTasks) do
@@ -105,7 +105,7 @@ ZombiePrograms.Walker.Main = function(bandit)
     end
 
     -- grill time
-    if BWOScheduler.SymptomLevel < 3 and ((hour >= 12 and hour < 15) or (hour >= 18 and hour < 23)) then
+    if BWOEventManager.SymptomLevel < 3 and ((hour >= 12 and hour < 15) or (hour >= 18 and hour < 23)) then
         local target = BWOObjects.FindGMD(bandit, "barbecue")
         if target.x and target.y and target.z and target.dist < 20 then
             local square = cell:getGridSquare(target.x, target.y, target.z)
@@ -164,7 +164,7 @@ ZombiePrograms.Walker.Main = function(bandit)
     end
 
     -- chair/bench rest
-    if BWOScheduler.SymptomLevel < 4 then 
+    if BWOEventManager.SymptomLevel < 4 then 
         local subTasks = BanditPrograms.Bench(bandit)
         if #subTasks > 0 then
             for _, subTask in pairs(subTasks) do
@@ -176,7 +176,7 @@ ZombiePrograms.Walker.Main = function(bandit)
 
     -- interact with players and other npcs
     -- dont do it on the street tho
-    if BWOScheduler.SymptomLevel < 3 then
+    if BWOEventManager.SymptomLevel < 3 then
         --local groundType = BanditUtils.GetGroundType(bandit:getSquare())
         --if groundType ~= "street" then
             local subTasks = BanditPrograms.Talk(bandit)
@@ -234,9 +234,9 @@ ZombiePrograms.Walker.Escape = function(bandit)
 
     -- symptoms
     if math.abs(id) % 4 > 0 then
-        if BWOScheduler.SymptomLevel == 3 then
+        if BWOEventManager.SymptomLevel == 3 then
             walkType = "Limp"
-        elseif BWOScheduler.SymptomLevel >= 4 then
+        elseif BWOEventManager.SymptomLevel >= 4 then
             walkType = "Scramble"
         end
 
@@ -299,4 +299,5 @@ ZombiePrograms.Walker.Surrender = function(bandit)
 
     return {status=true, next="Surrender", tasks=tasks}
 end
+
 

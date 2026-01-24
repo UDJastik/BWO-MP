@@ -76,9 +76,9 @@ ZombiePrograms.Inhabitant.Main = function(bandit)
         
         -- symptoms
         if math.abs(id) % 4 > 0 then
-            if BWOScheduler.SymptomLevel == 3 then
+            if BWOEventManager.SymptomLevel == 3 then
                 walkType = "Limp"
-            elseif BWOScheduler.SymptomLevel >= 4 then
+            elseif BWOEventManager.SymptomLevel >= 4 then
                 walkType = "Scramble"
             end
 
@@ -93,7 +93,7 @@ ZombiePrograms.Inhabitant.Main = function(bandit)
 
         -- instrusion
         ts = getTimestampMs()
-        if BWOScheduler.SymptomLevel < 3 then
+        if BWOEventManager.SymptomLevel < 3 then
             local playerList = BanditPlayer.GetPlayers()
             for i=0, playerList:size()-1 do
                 local player = playerList:get(i)
@@ -108,7 +108,7 @@ ZombiePrograms.Inhabitant.Main = function(bandit)
                             local dist = math.abs(bx - player:getX()) + math.abs(by - player:getY())
                             if dist < 30 and bandit:CanSee(player) and BWORooms.IsIntrusion(room) then
                                 Bandit.Say(bandit, "DEFENDER_SPOTTED")
-                                -- BWOScheduler.Add("CallCopsHostile", 1000)
+                                -- BWOEventManager.Add("CallCopsHostile", 1000)
 
                                 if math.abs(id) % 2 == 0 then
                                     Bandit.SetHostileP(bandit, true)
@@ -146,7 +146,7 @@ ZombiePrograms.Inhabitant.Main = function(bandit)
 
         -- house event actions
         local partyOn = false -- false
-        if BWOScheduler.SymptomLevel < 3 then
+        if BWOEventManager.SymptomLevel < 3 then
             if BWOBuildings.IsEventBuilding(building, "party") then
 
                 -- true music version
@@ -319,7 +319,7 @@ ZombiePrograms.Inhabitant.Main = function(bandit)
 
         -- barricade
         --ts = getTimestampMs()
-        if BWOScheduler.NPC.Barricade and BWOBuildings.IsResidential(building) then
+        if BWOEventManager.NPC.Barricade and BWOBuildings.IsResidential(building) then
             local barricadable = BWOObjects.FindBarricadable(bandit, def)
             if barricadable then
                 --local standSquare = barricadable:getIndoorSquare()
@@ -403,3 +403,4 @@ ZombiePrograms.Inhabitant.Defend = function(bandit)
 
     return {status=true, next="Defend", tasks=tasks}
 end
+

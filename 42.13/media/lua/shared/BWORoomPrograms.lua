@@ -731,18 +731,18 @@ BWORoomPrograms.zippeestore = function(bandit, def)
         local itemCnt = items:size()
 
         local walkType = "Walk"
-        if BWOScheduler.SymptomLevel > 0 then
+        if BWOEventManager.SymptomLevel > 0 then
             walkType = "Run"
         end
 
         local enough
-        if BWOScheduler.SymptomLevel == 0 then
+        if BWOEventManager.SymptomLevel == 0 then
             enough = 2
-        elseif BWOScheduler.SymptomLevel == 1 then
+        elseif BWOEventManager.SymptomLevel == 1 then
             enough = 3
-        elseif BWOScheduler.SymptomLevel == 2 then
+        elseif BWOEventManager.SymptomLevel == 2 then
             enough = 8
-        elseif BWOScheduler.SymptomLevel == 3 then
+        elseif BWOEventManager.SymptomLevel == 3 then
             enough = 12
         else
             enough = 24

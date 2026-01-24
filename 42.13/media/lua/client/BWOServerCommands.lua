@@ -135,6 +135,73 @@ BWOServerCommands.ForceRemoveResult = function(args)
     end
 end
 
+-- Server-side brain/program sync (crime reactions, threat response).
+BWOServerCommands.BanditBrainSync = function(args)
+    if type(args) ~= "table" then return end
+
+    local zid = args.id or args.zid
+    if zid == nil then return end
+
+    local zombie = nil
+    if BanditZombie and BanditZombie.GetInstanceById then
+        zombie = BanditZombie.GetInstanceById(zid)
+    end
+    if (not zombie) and BanditZombie and BanditZombie.Cache then
+        zombie = BanditZombie.Cache[zid]
+    end
+    if not zombie then return end
+
+    local brain = BanditBrain and BanditBrain.Get and BanditBrain.Get(zombie) or nil
+    if not brain then
+        local gmd = GetBanditClusterData and GetBanditClusterData(zid) or nil
+        if gmd and gmd[zid] then
+            brain = gmd[zid]
+            if BanditBrain and BanditBrain.Update then
+                BanditBrain.Update(zombie, brain)
+            end
+        else
+            return
+        end
+    end
+
+    if args.program ~= nil or args.stage ~= nil then
+        if type(brain.program) ~= "table" then
+            brain.program = { name = brain.program }
+        end
+        if args.program ~= nil then
+            brain.program.name = args.program
+        end
+        if args.stage ~= nil then
+            brain.program.stage = args.stage
+        end
+    end
+
+    if args.hostile ~= nil then brain.hostile = args.hostile end
+    if args.hostileP ~= nil then brain.hostileP = args.hostileP end
+end
+
+-- Play bandit speech on clients (server-authoritative trigger).
+BWOServerCommands.BanditSay = function(args)
+    if type(args) ~= "table" then return end
+    local zid = args.id or args.zid
+    local phrase = args.phrase
+    local force = args.force and true or false
+    if zid == nil or not phrase then return end
+
+    local zombie = nil
+    if BanditZombie and BanditZombie.GetInstanceById then
+        zombie = BanditZombie.GetInstanceById(zid)
+    end
+    if (not zombie) and BanditZombie and BanditZombie.Cache then
+        zombie = BanditZombie.Cache[zid]
+    end
+    if not zombie then return end
+
+    if Bandit and Bandit.Say then
+        Bandit.Say(zombie, phrase, force)
+    end
+end
+
 -- Server-side purchase result for container "buying" (SP-like behavior).
 BWOServerCommands.MoneyPayResult = function(args)
     if type(args) ~= "table" then return end

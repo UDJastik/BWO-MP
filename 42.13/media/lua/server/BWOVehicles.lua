@@ -448,7 +448,7 @@ BWOVehicles.dirMap = dirMap
 
 local AddVehicles = function()
 
-    if BWOScheduler.WorldAge > 168 then return end
+    if BWOEventManager.WorldAge > 168 then return end
     
     local players = (BWOUtils and BWOUtils.GetAllPlayers) and BWOUtils.GetAllPlayers() or nil
     if type(players) ~= "table" or #players == 0 then return end
@@ -483,3 +483,4 @@ end
 -- (it picks a random player and spawns a vehicle on nearby roads every 2 minutes).
 -- If you ever want to re-enable it, restore the event hook below.
 -- Events.EveryOneMinute.Add(AddVehicles)
+
